@@ -1,0 +1,307 @@
+# WHOOP BLE Health Pipeline - Project Context
+
+Last updated: June 4, 2026
+
+## What This Project Is
+
+This is a signed-in WHOOP Bluetooth capture and health-analysis web app built for Bluefy on iPhone.
+
+The main idea is:
+
+1. Wear WHOOP normally.
+2. Open the Netlify page in Bluefy.
+3. Sign in or create an account.
+4. Accept the cloud sync disclosure.
+5. Connect to the band.
+6. The page captures whatever BLE data WHOOP sends while connected.
+7. The app decodes standard Bluetooth data immediately: heart rate, RR intervals when present, and battery.
+8. The app stores raw packets and decoded fields locally in IndexedDB.
+9. New connected-session packets are automatically uploaded to Convex under the authenticated user.
+10. Over time, the backend can become the source for a custom local health pipeline.
+
+This does not use the WHOOP API, WHOOP cloud, WHOOP credentials, or any official WHOOP score endpoint.
+
+## Current Folder
+
+Project root:
+
+```text
+/Users/alandiaz/Documents/WhoopFreedom/whoop-ble-explorer
+```
+
+Important files:
+
+```text
+src/App.tsx              Main React UI and live capture flow
+src/utils.ts            BLE parsing, backlog decoder, local sleep analysis
+src/healthReport.ts     Imported capture normalization and report builder
+src/pipelineSync.ts     Convex upload client
+src/authStorage.ts      Convex Auth token storage with Keep me signed in preference
+convex/auth.ts          Convex Auth password provider setup
+convex/http.ts          Convex Auth HTTP routes
+convex/schema.ts        Convex database schema
+convex/captures.ts      Convex capture mutation/query code
+README.md               Setup and run notes
+netlify.toml            Netlify build and SPA routing config
+```
+
+## Live App
+
+Production URL:
+
+```text
+https://whoop-ble-explorer.netlify.app
+```
+
+Netlify site:
+
+```text
+whoop-ble-explorer
+```
+
+Normal deploy command:
+
+```bash
+npm run build
+npx netlify deploy --prod --dir=dist
+```
+
+## Current UX Direction
+
+The UI is intentionally simple.
+
+The first thing a user should see is the Today Feed:
+
+- BPM
+- Sleep Score
+- Recovery proxy
+- Strain proxy
+- Battery
+- Pipeline status
+
+Below that, the user can see:
+
+- live Bluetooth capture status
+- automatic capture/send progress
+- WHOOP band alarm controls
+- local sleep estimate
+- backlog decoder
+- local health report tools
+- advanced BLE explorer hidden behind disclosure
+
+The previous WHOOP-style circle dashboard was removed because it looked forced and confusing.
+
+## Current Capture Flow
+
+The intended sequence is:
+
+1. User wears WHOOP during the day and/or overnight.
+2. If sleeping, the WHOOP can stay disconnected from Bluefy overnight.
+3. In the morning, user opens the Netlify page in Bluefy.
+4. User signs in. The sign-in form includes a Keep me signed in checkbox.
+5. User accepts the cloud sync disclosure.
+6. User connects to WHOOP.
+7. The page automatically subscribes to available notify/indicate characteristics.
+8. Incoming packets are stored locally.
+9. New packets are automatically batched and sent to Convex when the pipeline is configured, the auth token is present, and consent is accepted.
+10. The UI shows the live status so the user can see connect, capture, process, and send stages.
+
+## Data We Can Decode Reliably
+
+Standard BLE:
+
+- Heart Rate service `180d`
+- Heart Rate Measurement characteristic `2a37`
+- Battery service `180f`
+- Battery Level characteristic `2a19`
+- RR intervals when they are included in `2a37`
+
+WHOOP proprietary service:
+
+- Service `61080001-8d6d-82b8-614a-1c8cb0f8dcc6`
+- Important characteristics seen so far:
+  - `61080004-8d6d-82b8-614a-1c8cb0f8dcc6`
+  - `61080007-8d6d-82b8-614a-1c8cb0f8dcc6`
+
+The proprietary packets are partially decoded. We can find:
+
+- some CBOR-like structures
+- text fragments like firmware/build labels
+- embedded timestamp fields
+- trusted historical timestamp fields in some `61080007` packets
+
+We cannot yet fully decode official WHOOP sleep score, recovery score, strain score, or sleep stages from BLE.
+
+## Local Sleep Pipeline State
+
+The sleep estimate is automatic only. Manual sleep start/wake controls were removed.
+
+Current sleep-window logic:
+
+1. Decode trusted historical timestamps from WHOOP proprietary backlog packets.
+2. Look for a real overnight no-packet gap where the user disconnected from Bluefy.
+3. Require at least 2 trusted WHOOP backlog timestamp points inside that gap.
+4. Use the morning reconnect/gap end as the wake boundary.
+5. Infer sleep start from the trusted backlog points inside the gap.
+6. Reject windows shorter than 3 hours or longer than 10 hours.
+
+This was retuned after the app incorrectly estimated an impossible `10:14 PM - 3:15 AM` window.
+
+Validation against the saved morning capture:
+
+```text
+Capture file:
+/Users/alandiaz/Downloads/whoop-morning-capture-2026-06-03T14_32_23.287Z.json
+
+New estimate:
+Jun 3, 2026, 1:15 AM - 7:27 AM
+6h 12m asleep
+3 trusted backlog points
+local score 64/100
+medium confidence
+```
+
+This is still a local estimate, not an official WHOOP sleep score.
+
+## Current Local Scores
+
+The app currently produces local proxy scores:
+
+- Sleep Score: based on estimated duration, HR stability, HRV/RR proxy, continuity, and data confidence.
+- Recovery: based on local sleep score, RR/HRV proxy when available, HR profile, and confidence.
+- Strain: based on HR load from captured heart-rate readings.
+- BPM: min/avg/max from valid heart-rate packets.
+- Battery: latest decoded battery packet.
+
+These are browser-local estimates and should be displayed as estimates/proxies.
+
+## Convex Backend State
+
+Convex support exists in code and now requires Convex Auth for sync.
+
+The upload bundle includes:
+
+- raw BLE packets
+- decoded HR/RR/battery
+- proprietary frame decode attempts
+- local sleep analysis
+- capture label
+- timestamps
+- device/session IDs
+- a placeholder reportedSleep object for schema compatibility
+
+Important file:
+
+```text
+src/pipelineSync.ts
+```
+
+Convex is used through:
+
+```text
+VITE_CONVEX_URL
+```
+
+If this environment variable is not available to the browser build, the public signed-in app shows a Convex configuration warning.
+
+Convex Auth requirements:
+
+- `@convex-dev/auth`
+- `convex/auth.ts`
+- `convex/http.ts`
+- `convex/auth.config.ts`
+- `authTables` in `convex/schema.ts`
+- Convex deployment env vars `JWT_PRIVATE_KEY` and `JWKS`
+
+The browser never sends a `userId` for capture ownership. `convex/captures.ts` calls `getAuthUserId(ctx)` and adds `userId` server-side. Existing capture tables keep `userId` optional so older records remain schema-compatible.
+
+## Current Boundaries
+
+Do not claim:
+
+- official WHOOP sleep score
+- official WHOOP recovery
+- official WHOOP strain
+- official sleep stages
+- complete proprietary decode
+
+Do claim:
+
+- local BLE capture
+- standard BLE HR/RR/battery decode
+- partial WHOOP proprietary decode
+- local sleep/recovery/strain estimates
+- confidence level based on available data
+
+## Known Limitations
+
+- Bluefy/Web Bluetooth only exposes services and characteristics the browser allows.
+- Some WHOOP characteristics may be hidden, encrypted, bonded, or unavailable.
+- Sleeping disconnected means the browser has no live overnight HR stream unless WHOOP sends backlog data later.
+- The proprietary backlog format is not fully understood.
+- Sleep stages are currently heuristic only, not decoded labels.
+- A no-packet gap alone is not enough evidence for sleep; the current logic requires trusted backlog points too.
+- Convex receives only what the browser captures or imports.
+
+## Next Useful Work
+
+Highest-value next steps:
+
+1. Collect more morning reconnect captures from different nights.
+2. Store those captures in Convex and compare repeated proprietary fields.
+3. Improve the `61080004` and `61080007` decoder with field clustering.
+4. Separate trusted timestamp fields from random timestamp-looking byte sequences.
+5. Improve sleep-stage proxy using HR, RR intervals, movement-like proprietary fields if decoded, and overnight continuity.
+6. Add backend aggregate views for daily history once enough captures exist.
+7. Keep the UI simple: Today Feed first, advanced decoder hidden unless needed.
+
+## Development Commands
+
+Install:
+
+```bash
+npm install
+```
+
+Run locally:
+
+```bash
+npm run dev
+```
+
+Build:
+
+```bash
+npm run build
+```
+
+Deploy:
+
+```bash
+npx netlify deploy --prod --dir=dist
+```
+
+Check Netlify link/auth:
+
+```bash
+npx netlify status
+```
+
+Run Convex locally:
+
+```bash
+npx convex dev
+```
+
+## Mental Model For Future Codex Work
+
+This project is not trying to hack WHOOP cloud data.
+
+It is trying to build the best possible independent health pipeline from BLE data that the user can capture directly from their own band in Bluefy. The right engineering posture is:
+
+- decode only what is actually present
+- keep raw packets forever for later decoding
+- show confidence honestly
+- avoid fake precision
+- prefer simple user-facing flows
+- keep advanced reverse-engineering tools available but not front-and-center
