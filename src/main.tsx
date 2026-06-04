@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { ConvexAuthProvider } from '@convex-dev/auth/react';
 import { ConvexReactClient } from 'convex/react';
 import App from './App';
-import { authTokenStorage } from './authStorage';
 import './styles.css';
 
 const convexUrl = import.meta.env.VITE_CONVEX_URL as string | undefined;
@@ -12,7 +11,7 @@ const convex = convexUrl ? new ConvexReactClient(convexUrl) : null;
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     {convex ? (
-      <ConvexAuthProvider client={convex} storage={authTokenStorage}>
+      <ConvexAuthProvider client={convex}>
         <App />
       </ConvexAuthProvider>
     ) : (
