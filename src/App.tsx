@@ -51,11 +51,12 @@ const WHOOP_PROPRIETARY_SERVICE = '61080001-8d6d-82b8-614a-1c8cb0f8dcc6';
 const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
-const VALIDATED_SLEEP_REFERENCE = {
+const SLEEP_ESTIMATE_REFERENCE = {
   date: 'Jun 3, 2026',
+  dateLong: 'Wed, Jun 3, 2026',
   window: '1:15 AM - 7:27 AM',
   duration: '6h 12m asleep',
-  note: 'First validation baseline for the local BLE sleep pipeline.',
+  note: 'Local estimate line for the BLE sleep pipeline.',
 };
 
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
@@ -1669,7 +1670,6 @@ function TodayFeedPanel({
     ? `${formatTimeOnly(report.sleep.estimatedStartIso)} - ${formatTimeOnly(report.sleep.estimatedEndIso)}`
     : 'Waiting for overnight window';
   const todayDateShort = formatFeedDate(currentDate);
-  const todayDateLong = formatFeedDateLong(currentDate);
   const sleepEvidence = report.sleep.windowEvidencePoints > 0
     ? `${report.sleep.windowEvidencePoints} trusted backlog points`
     : 'Waiting for trusted backlog points';
@@ -1707,7 +1707,7 @@ function TodayFeedPanel({
         <div className="sleep-feed-header">
           <div>
             <strong>Sleep Estimate</strong>
-            <em>{todayDateLong}</em>
+            <em>{SLEEP_ESTIMATE_REFERENCE.dateLong}</em>
             <span>{sleepWindow}</span>
           </div>
           <small>{report.sleep.confidenceLabel} confidence</small>
@@ -1728,11 +1728,11 @@ function TodayFeedPanel({
         </div>
         <div className="sleep-validation-card">
           <div>
-            <span>Validated baseline</span>
-            <strong>{VALIDATED_SLEEP_REFERENCE.date}</strong>
+            <span>Estimate line</span>
+            <strong>{SLEEP_ESTIMATE_REFERENCE.date}</strong>
           </div>
           <p>
-            {VALIDATED_SLEEP_REFERENCE.window}, {VALIDATED_SLEEP_REFERENCE.duration}. {VALIDATED_SLEEP_REFERENCE.note}
+            {SLEEP_ESTIMATE_REFERENCE.window}, {SLEEP_ESTIMATE_REFERENCE.duration}. {SLEEP_ESTIMATE_REFERENCE.note}
           </p>
         </div>
         <div className="sleep-feed-stages">
@@ -2146,7 +2146,7 @@ function LocalSleepAnalysisPanel({
 
       <div className="sleep-notes">
         <p>
-          Validation baseline: {VALIDATED_SLEEP_REFERENCE.date}, {VALIDATED_SLEEP_REFERENCE.window}, {VALIDATED_SLEEP_REFERENCE.duration}. {VALIDATED_SLEEP_REFERENCE.note}
+          Estimate line: {SLEEP_ESTIMATE_REFERENCE.date}, {SLEEP_ESTIMATE_REFERENCE.window}, {SLEEP_ESTIMATE_REFERENCE.duration}. {SLEEP_ESTIMATE_REFERENCE.note}
         </p>
         <p>
           This sleep window is inferred automatically from BLE data. The Bluetooth capture only proves the packets this browser received, so the official sleep score still cannot be recovered from this data alone.
@@ -2244,15 +2244,6 @@ function formatFeedDate(date: Date): string {
     weekday: 'short',
     month: 'short',
     day: 'numeric',
-  }).format(date);
-}
-
-function formatFeedDateLong(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
   }).format(date);
 }
 
