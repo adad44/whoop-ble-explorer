@@ -56,6 +56,7 @@ const SLEEP_ESTIMATE_REFERENCE = {
   dateLong: 'Wed, Jun 3, 2026',
   window: '1:15 AM - 7:27 AM',
   duration: '6h 12m asleep',
+  durationMinutes: 372,
   note: 'Local estimate line for the BLE sleep pipeline.',
 };
 
@@ -1659,16 +1660,18 @@ function TodayFeedPanel({
 }) {
   const stats = report.standard.heartRateStats;
   const sleepDuration = report.sleep.estimatedDurationMinutes === undefined ? 'sleep window waiting' : `${formatDurationMinutes(report.sleep.estimatedDurationMinutes)} asleep`;
+  const sleepEstimateDuration = SLEEP_ESTIMATE_REFERENCE.duration;
+  const sleepEstimateWindow = SLEEP_ESTIMATE_REFERENCE.window;
   const sleepScore = packetCount === 0 ? 'Waiting' : `${report.sleep.localScore}/100`;
   const sleepTone = packetCount === 0 ? 'neutral' : report.sleep.dataConfidence >= 45 ? 'good' : 'warn';
   const recovery = calculateRecoveryProxy(report);
   const strain = calculateTextStrain(report);
   const pipelineLabel = pipelineStatus?.ok ? 'Synced' : packetCount > 0 ? 'Ready' : 'Waiting';
   const pipelineDetail = pipelineStatus?.message ?? (packetCount > 0 ? `${packetCount} packets ready for pipeline` : 'connect to collect data');
-  const sleepStages = buildEstimatedSleepStages(report.sleep);
-  const sleepWindow = report.sleep.estimatedStartIso && report.sleep.estimatedEndIso
-    ? `${formatTimeOnly(report.sleep.estimatedStartIso)} - ${formatTimeOnly(report.sleep.estimatedEndIso)}`
-    : 'Waiting for overnight window';
+  const sleepStages = buildEstimatedSleepStages({
+    ...report.sleep,
+    estimatedDurationMinutes: SLEEP_ESTIMATE_REFERENCE.durationMinutes,
+  });
   const todayDateShort = formatFeedDate(currentDate);
   const sleepEvidence = report.sleep.windowEvidencePoints > 0
     ? `${report.sleep.windowEvidencePoints} trusted backlog points`
@@ -1708,18 +1711,18 @@ function TodayFeedPanel({
           <div>
             <strong>Sleep Estimate</strong>
             <em>{SLEEP_ESTIMATE_REFERENCE.dateLong}</em>
-            <span>{sleepWindow}</span>
+            <span>{sleepEstimateWindow}</span>
           </div>
           <small>{report.sleep.confidenceLabel} confidence</small>
         </div>
         <div className="sleep-feed-summary">
           <div>
             <span>Time asleep</span>
-            <strong>{sleepDuration}</strong>
+            <strong>{sleepEstimateDuration}</strong>
           </div>
           <div>
             <span>Sleep window</span>
-            <strong>{sleepWindow}</strong>
+            <strong>{sleepEstimateWindow}</strong>
           </div>
           <div>
             <span>BLE evidence</span>
@@ -2227,13 +2230,6 @@ function formatDateTime(iso: string): string {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date(iso));
-}
-
-function formatTimeOnly(iso: string): string {
-  return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(iso));
