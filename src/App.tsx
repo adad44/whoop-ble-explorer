@@ -51,6 +51,12 @@ const WHOOP_PROPRIETARY_SERVICE = '61080001-8d6d-82b8-614a-1c8cb0f8dcc6';
 const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
+const VALIDATED_SLEEP_REFERENCE = {
+  date: 'Jun 3, 2026',
+  window: '1:15 AM - 7:27 AM',
+  duration: '6h 12m asleep',
+  note: 'First validation baseline for the local BLE sleep pipeline.',
+};
 
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
 type StepState = 'done' | 'active' | 'waiting' | 'error';
@@ -1658,7 +1664,15 @@ function TodayFeedPanel({
   const strain = calculateTextStrain(report);
   const pipelineLabel = pipelineStatus?.ok ? 'Synced' : packetCount > 0 ? 'Ready' : 'Waiting';
   const pipelineDetail = pipelineStatus?.message ?? (packetCount > 0 ? `${packetCount} packets ready for pipeline` : 'connect to collect data');
+  const sleepStages = buildEstimatedSleepStages(report.sleep);
+  const sleepWindow = report.sleep.estimatedStartIso && report.sleep.estimatedEndIso
+    ? `${formatTimeOnly(report.sleep.estimatedStartIso)} - ${formatTimeOnly(report.sleep.estimatedEndIso)}`
+    : 'Waiting for overnight window';
   const todayDateShort = formatFeedDate(currentDate);
+  const todayDateLong = formatFeedDateLong(currentDate);
+  const sleepEvidence = report.sleep.windowEvidencePoints > 0
+    ? `${report.sleep.windowEvidencePoints} trusted backlog points`
+    : 'Waiting for trusted backlog points';
 
   return (
     <details className="today-feed-panel" open>
@@ -1689,6 +1703,51 @@ function TodayFeedPanel({
         onTimeChange={onAlarmTimeChange}
         onToggle={onToggleAlarm}
       />
+      <section className="sleep-estimate-feed" aria-label="Estimated sleep details">
+        <div className="sleep-feed-header">
+          <div>
+            <strong>Sleep Estimate</strong>
+            <em>{todayDateLong}</em>
+            <span>{sleepWindow}</span>
+          </div>
+          <small>{report.sleep.confidenceLabel} confidence</small>
+        </div>
+        <div className="sleep-feed-summary">
+          <div>
+            <span>Time asleep</span>
+            <strong>{sleepDuration}</strong>
+          </div>
+          <div>
+            <span>Sleep window</span>
+            <strong>{sleepWindow}</strong>
+          </div>
+          <div>
+            <span>BLE evidence</span>
+            <strong>{sleepEvidence}</strong>
+          </div>
+        </div>
+        <div className="sleep-validation-card">
+          <div>
+            <span>Validated baseline</span>
+            <strong>{VALIDATED_SLEEP_REFERENCE.date}</strong>
+          </div>
+          <p>
+            {VALIDATED_SLEEP_REFERENCE.window}, {VALIDATED_SLEEP_REFERENCE.duration}. {VALIDATED_SLEEP_REFERENCE.note}
+          </p>
+        </div>
+        <div className="sleep-feed-stages">
+          {sleepStages.map((stage) => (
+            <div className="sleep-stage-row" key={stage.label}>
+              <div>
+                <span>{stage.label}</span>
+                <strong>{stage.value}</strong>
+              </div>
+              <meter min="0" max="100" value={stage.percent} />
+            </div>
+          ))}
+        </div>
+        <p>{report.sleep.estimatedDurationMinutes === undefined ? 'Stages will appear after a morning reconnect provides enough overnight timestamps.' : 'Stage split is estimated from duration, HR stability, HRV proxy, and data confidence. It is not an official WHOOP sleep-stage decode.'}</p>
+      </section>
     </details>
   );
 }
@@ -2087,6 +2146,9 @@ function LocalSleepAnalysisPanel({
 
       <div className="sleep-notes">
         <p>
+          Validation baseline: {VALIDATED_SLEEP_REFERENCE.date}, {VALIDATED_SLEEP_REFERENCE.window}, {VALIDATED_SLEEP_REFERENCE.duration}. {VALIDATED_SLEEP_REFERENCE.note}
+        </p>
+        <p>
           This sleep window is inferred automatically from BLE data. The Bluetooth capture only proves the packets this browser received, so the official sleep score still cannot be recovered from this data alone.
         </p>
         {analysis.notes.map((note) => (
@@ -2165,6 +2227,13 @@ function formatDateTime(iso: string): string {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
     day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(iso));
+}
+
+function formatTimeOnly(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(iso));
@@ -2271,6 +2340,51 @@ function scoreRmssdProxy(rmssdMs: number): number {
     return Math.round(55 + ((rmssdMs - 25) / 20) * 25);
   }
   return clampNumber(Math.round(rmssdMs * 2), 10, 55);
+}
+
+interface EstimatedSleepStage {
+  label: string;
+  value: string;
+  percent: number;
+}
+
+function buildEstimatedSleepStages(analysis: LocalSleepAnalysis): EstimatedSleepStage[] {
+  const duration = analysis.estimatedDurationMinutes;
+  if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || duration > 14 * 60) {
+    return [
+      { label: 'Awake', value: 'Waiting', percent: 0 },
+      { label: 'Light', value: 'Waiting', percent: 0 },
+      { label: 'Deep', value: 'Waiting', percent: 0 },
+      { label: 'REM', value: 'Waiting', percent: 0 },
+    ];
+  }
+
+  const confidenceAdjust = analysis.dataConfidence >= 75 ? 1 : analysis.dataConfidence >= 45 ? 0.7 : 0.35;
+  const hrRange = analysis.hrStats ? analysis.hrStats.max - analysis.hrStats.min : 18;
+  const stableHrBonus = Math.max(-4, Math.min(5, (18 - hrRange) / 4)) * confidenceAdjust;
+  const hrvBonus = analysis.hrvProxy ? Math.max(-3, Math.min(4, (analysis.hrvProxy.rmssdMs - 35) / 10)) * confidenceAdjust : 0;
+  const shortSleepPenalty = duration < 360 ? 4 : duration > 540 ? 2 : 0;
+
+  const awakePercent = clampNumber(10 + shortSleepPenalty - stableHrBonus, 6, 22);
+  const deepPercent = clampNumber(15 + stableHrBonus + hrvBonus, 8, 24);
+  const remPercent = clampNumber(22 + Math.max(0, hrvBonus / 2), 16, 28);
+  const lightPercent = Math.max(0, 100 - awakePercent - deepPercent - remPercent);
+
+  return [
+    makeSleepStage('Awake', awakePercent, duration),
+    makeSleepStage('Light', lightPercent, duration),
+    makeSleepStage('Deep', deepPercent, duration),
+    makeSleepStage('REM', remPercent, duration),
+  ];
+}
+
+function makeSleepStage(label: string, percent: number, durationMinutes: number): EstimatedSleepStage {
+  const minutes = Math.round(durationMinutes * (percent / 100));
+  return {
+    label,
+    value: formatDurationMinutes(minutes),
+    percent: Math.round(percent),
+  };
 }
 
 function clampNumber(value: number, min: number, max: number): number {
