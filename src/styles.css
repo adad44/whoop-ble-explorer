@@ -298,6 +298,15 @@ h3 {
   line-height: 1.35;
 }
 
+.auth-status {
+  border: 1px solid #b9ddd3;
+  border-radius: 8px;
+  background: var(--teal-soft);
+  color: var(--teal);
+  padding: 10px 12px;
+  line-height: 1.35;
+}
+
 .auth-disclaimers {
   display: grid;
   gap: 8px;

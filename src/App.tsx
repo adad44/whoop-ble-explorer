@@ -1450,21 +1450,44 @@ function SignInScreen() {
   const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [rememberMe, setRememberMe] = useState(getRememberMePreference);
   const [submitting, setSubmitting] = useState(false);
+  const [formStatus, setFormStatus] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setSubmitting(true);
     setFormError(null);
+    setFormStatus(mode === 'signIn' ? 'Checking your account...' : 'Creating your account...');
     setRememberMePreference(rememberMe);
 
     const formData = new FormData(event.currentTarget);
-    formData.set('flow', mode);
+    const email = String(formData.get('email') ?? '').trim().toLowerCase();
+    const password = String(formData.get('password') ?? '');
+
+    if (!email || !password) {
+      setFormError('Enter your email and password.');
+      setFormStatus(null);
+      setSubmitting(false);
+      return;
+    }
 
     try {
-      await signIn('password', formData);
+      const result = await signIn('password', {
+        flow: mode,
+        email,
+        password,
+      });
+      if (result.signingIn) {
+        setFormStatus('Signed in. Loading your WHOOP workspace...');
+        window.setTimeout(() => {
+          window.location.reload();
+        }, 800);
+        return;
+      }
+      setFormStatus('Sign-in started. If the workspace does not load, refresh this page.');
     } catch (signInError) {
       setFormError(errorMessage(signInError));
+      setFormStatus(null);
     } finally {
       setSubmitting(false);
     }
@@ -1494,6 +1517,7 @@ function SignInScreen() {
             <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
             Keep me signed in
           </label>
+          {formStatus && <p className="auth-status" aria-live="polite">{formStatus}</p>}
           {formError && <p className="auth-error">{formError}</p>}
           <button className="primary-action" type="submit" disabled={submitting}>
             {submitting ? 'Working...' : mode === 'signIn' ? 'Sign in' : 'Create account'}
