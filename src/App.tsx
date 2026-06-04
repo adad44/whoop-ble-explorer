@@ -1138,7 +1138,6 @@ function CaptureApp() {
 
         <div className="simple-summary-row">
           <Signal label="Connection" value={liveLabel} subValue={connectedDevice?.name ?? 'No device'} tone={isLive ? 'good' : connected ? 'neutral' : 'warn'} />
-          <Signal label="Heart Rate" value={latestHeartRate ? `${latestHeartRate.bpm} bpm` : 'No reading'} />
           <Signal label="Captured" value={String(packetCount)} subValue="local packets" tone={packetCount > 0 ? 'good' : 'neutral'} />
         </div>
 
