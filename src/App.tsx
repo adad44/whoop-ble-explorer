@@ -1670,7 +1670,7 @@ function TodayFeedPanel({
     ...report.sleep,
     estimatedDurationMinutes: sleepEstimate.durationMinutes,
   });
-  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes);
+  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes, currentDate);
   const todayDateShort = formatFeedDate(currentDate);
   const sleepEvidence = sleepEstimate.isFallback
     ? 'Waiting for new capture'
@@ -2434,13 +2434,13 @@ function formatClockTime(iso: string): string {
   }).format(new Date(iso));
 }
 
-function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSleepStage[], asleepMinutes: number): ExtraSleepMetric[] {
+function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSleepStage[], asleepMinutes: number, currentDate: Date): ExtraSleepMetric[] {
   const awakeMinutes = sleepStages.find((stage) => stage.label === 'Awake')?.minutes ?? Math.round(asleepMinutes * 0.1);
   const latencyMinutes = estimateSleepLatencyMinutes(report);
   const timeInBedMinutes = asleepMinutes + awakeMinutes + latencyMinutes;
   const sleepEfficiency = Math.round((asleepMinutes / Math.max(1, timeInBedMinutes)) * 100);
   const sleepNeedMinutes = estimateSleepNeedMinutes(report);
-  const sleepDebtMinutes = Math.max(0, sleepNeedMinutes - asleepMinutes);
+  const weeklySleepDebtMinutes = estimateWeeklySleepDebtMinutes(sleepNeedMinutes, asleepMinutes, currentDate);
   const restingHeartRate = report.sleep.hrStats?.min ?? report.standard.heartRateStats?.min;
   const stressScore = calculateStressMonitorProxy(report);
 
@@ -2472,8 +2472,8 @@ function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSlee
     },
     {
       label: 'Sleep debt',
-      value: sleepDebtMinutes > 0 ? formatDurationMinutes(sleepDebtMinutes) : 'None',
-      subValue: 'need minus sleep',
+      value: weeklySleepDebtMinutes > 0 ? formatDurationMinutes(weeklySleepDebtMinutes) : 'None',
+      subValue: 'weekly reset',
     },
     {
       label: 'Resting HR',
@@ -2510,6 +2510,18 @@ function estimateSleepNeedMinutes(report: HealthReport): number {
   const recoveryAdjustment = recovery === undefined ? 0 : recovery < 55 ? 20 : recovery >= 75 ? -10 : 0;
   const strainAdjustment = strain === undefined ? 0 : strain >= 12 ? 18 : strain >= 8 ? 10 : 0;
   return clampNumber(480 + recoveryAdjustment + strainAdjustment, 450, 540);
+}
+
+function estimateWeeklySleepDebtMinutes(sleepNeedMinutes: number, asleepMinutes: number, currentDate: Date): number {
+  const weekDayCount = getCurrentWeekDayCount(currentDate);
+  const weeklyNeedMinutes = sleepNeedMinutes * weekDayCount;
+  const estimatedWeeklySleepMinutes = asleepMinutes * weekDayCount;
+  return Math.max(0, Math.round(weeklyNeedMinutes - estimatedWeeklySleepMinutes));
+}
+
+function getCurrentWeekDayCount(currentDate: Date): number {
+  const dayOfWeek = currentDate.getDay();
+  return dayOfWeek === 0 ? 7 : dayOfWeek;
 }
 
 function calculateStressMonitorProxy(report: HealthReport): number | undefined {
