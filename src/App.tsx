@@ -2022,6 +2022,7 @@ function StrainPage({
   const strain = calculateTextStrain(report);
   const stressScore = calculateStressMonitorProxy(report);
   const strainTone = strain === undefined ? 'neutral' : strain >= 10 ? 'warn' : 'good';
+  const heartRateReadings = report.standard.heartRateReadings;
 
   return (
     <section className="metric-page">
@@ -2045,6 +2046,7 @@ function StrainPage({
         <Signal label="RR / HRV" value={report.standard.rmssdMs === undefined ? 'Waiting' : `${report.standard.rmssdMs} ms`} subValue={`${report.standard.rrIntervals} RR intervals`} tone={report.standard.rmssdMs === undefined ? 'neutral' : 'good'} />
         <Signal label="Captured" value={String(packetCount)} subValue="local packets stored" tone={packetCount > 0 ? 'good' : 'neutral'} />
       </div>
+      <StrainTrendGraph readings={heartRateReadings} />
     </section>
   );
 }
@@ -3005,6 +3007,111 @@ function HeartRateGraph({ readings }: { readings: HeartRateReading[] }) {
       </div>
     </div>
   );
+}
+
+function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
+  const width = 360;
+  const height = 150;
+  const chartPadding = 14;
+  const validReadings = readings
+    .map((reading) => ({ ...reading, timeMs: new Date(reading.timestamp).getTime() }))
+    .filter((reading) => Number.isFinite(reading.timeMs) && Number.isFinite(reading.bpm) && reading.bpm > 0)
+    .sort((a, b) => a.timeMs - b.timeMs);
+
+  if (!validReadings.length) {
+    return (
+      <section className="strain-trend-card">
+        <div className="strain-trend-heading">
+          <div>
+            <p className="eyebrow">Daily strain curve</p>
+            <h3>Peaks and lows</h3>
+          </div>
+        </div>
+        <EmptyState text="No heart-rate readings yet. Connect and capture to build the daily strain curve." />
+      </section>
+    );
+  }
+
+  const latestDay = startOfLocalDay(new Date(validReadings[validReadings.length - 1].timestamp)).getTime();
+  const dailyReadings = validReadings.filter((reading) => {
+    const day = startOfLocalDay(new Date(reading.timestamp)).getTime();
+    return day === latestDay;
+  });
+  const dayReadings = dailyReadings.length ? dailyReadings : validReadings.slice(-120);
+  const baseline = Math.max(45, Math.min(...dayReadings.map((reading) => reading.bpm)) - 3);
+  const strainPoints = dayReadings.map((reading) => ({
+    timestamp: reading.timestamp,
+    timeMs: reading.timeMs,
+    bpm: reading.bpm,
+    score: calculateReadingStrainLoad(reading.bpm, baseline),
+  }));
+  const firstTime = strainPoints[0].timeMs;
+  const lastTime = strainPoints[strainPoints.length - 1].timeMs;
+  const timeRange = Math.max(1, lastTime - firstTime);
+  const minScore = Math.max(0, Math.min(...strainPoints.map((point) => point.score)) - 0.4);
+  const maxScore = Math.min(21, Math.max(...strainPoints.map((point) => point.score)) + 0.4);
+  const scoreRange = Math.max(1, maxScore - minScore);
+  const plotWidth = width - chartPadding * 2;
+  const plotHeight = height - chartPadding * 2;
+  const pointPositions = strainPoints.map((point) => ({
+    ...point,
+    x: chartPadding + ((point.timeMs - firstTime) / timeRange) * plotWidth,
+    y: chartPadding + plotHeight - ((point.score - minScore) / scoreRange) * plotHeight,
+  }));
+  const peak = pointPositions.reduce((best, point) => (point.score > best.score ? point : best), pointPositions[0]);
+  const low = pointPositions.reduce((best, point) => (point.score < best.score ? point : best), pointPositions[0]);
+  const polyline = pointPositions.map((point) => `${point.x},${point.y}`).join(' ');
+  const captureSpan = `${formatGraphTime(strainPoints[0].timestamp)} - ${formatGraphTime(strainPoints[strainPoints.length - 1].timestamp)}`;
+
+  return (
+    <section className="strain-trend-card">
+      <div className="strain-trend-heading">
+        <div>
+          <p className="eyebrow">Daily strain curve</p>
+          <h3>Peaks and lows</h3>
+          <span>{captureSpan}</span>
+        </div>
+        <small>{strainPoints.length} HR samples</small>
+      </div>
+      <div className="strain-graph-wrap">
+        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Estimated strain peaks and lows through the day">
+          <line x1={chartPadding} y1={height - chartPadding} x2={width - chartPadding} y2={height - chartPadding} />
+          <line x1={chartPadding} y1={chartPadding} x2={chartPadding} y2={height - chartPadding} />
+          {polyline && <polyline className="strain-line" points={polyline} />}
+          <circle className="strain-marker low" cx={low.x} cy={low.y} r="5" />
+          <circle className="strain-marker peak" cx={peak.x} cy={peak.y} r="5" />
+          <text className="strain-marker-label low" x={Math.min(width - 64, low.x + 8)} y={Math.max(18, low.y - 8)}>low</text>
+          <text className="strain-marker-label peak" x={Math.min(width - 70, peak.x + 8)} y={Math.max(18, peak.y - 8)}>peak</text>
+        </svg>
+      </div>
+      <div className="strain-point-summary">
+        <div>
+          <span>Peak strain</span>
+          <strong>{peak.score.toFixed(1)}/21</strong>
+          <small>{formatGraphTime(peak.timestamp)} at {peak.bpm} bpm</small>
+        </div>
+        <div>
+          <span>Lowest strain</span>
+          <strong>{low.score.toFixed(1)}/21</strong>
+          <small>{formatGraphTime(low.timestamp)} at {low.bpm} bpm</small>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function calculateReadingStrainLoad(bpm: number, baseline: number): number {
+  const elevatedFromBaseline = Math.max(0, bpm - baseline);
+  const highHrLoad = Math.max(0, bpm - 95);
+  const score = 1 + elevatedFromBaseline / 6 + highHrLoad / 10;
+  return Math.round(clampNumber(score, 0, 21) * 10) / 10;
+}
+
+function formatGraphTime(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(iso));
 }
 
 function errorMessage(error: unknown): string {
