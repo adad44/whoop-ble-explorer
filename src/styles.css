@@ -990,6 +990,49 @@ h3 {
   background: var(--navy-700);
 }
 
+.alarm-day-picker {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+
+.alarm-day-picker legend {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.alarm-day-picker > div {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(30px, 1fr));
+  gap: 6px;
+}
+
+.alarm-day-picker button {
+  min-width: 0;
+  min-height: 34px;
+  border-color: #d8c8ad;
+  background: var(--cream-50);
+  color: var(--muted);
+  padding: 0;
+  font-size: 0.78rem;
+}
+
+.alarm-day-picker button.selected {
+  border-color: var(--navy-900);
+  background: var(--navy-900);
+  color: var(--cream-50);
+}
+
+.alarm-day-picker:disabled button {
+  opacity: 0.6;
+}
+
 .sleep-estimate-feed {
   display: grid;
   gap: 10px;
@@ -2628,6 +2671,10 @@ textarea {
   }
 
   .strain-point-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .alarm-actions {
     grid-template-columns: 1fr;
   }
 

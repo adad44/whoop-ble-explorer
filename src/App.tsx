@@ -67,6 +67,7 @@ type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'proc
 type StepState = 'done' | 'active' | 'waiting' | 'error';
 type WorkspacePage = 'today' | 'sleep' | 'recovery' | 'strain' | 'live';
 type MotionIconName = 'today' | 'sleep' | 'recovery' | 'strain' | 'live' | 'heart' | 'battery' | 'data' | 'sync' | 'clock' | 'neutral';
+type WeekdayIndex = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string; icon: MotionIconName }> = [
   { id: 'today', label: 'Today', detail: 'feed', icon: 'today' },
@@ -75,6 +76,17 @@ const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string;
   { id: 'strain', label: 'Strain', detail: 'load', icon: 'strain' },
   { id: 'live', label: 'Live', detail: 'connect', icon: 'live' },
 ];
+
+const WEEKDAY_OPTIONS: Array<{ value: WeekdayIndex; label: string; shortLabel: string }> = [
+  { value: 1, label: 'Monday', shortLabel: 'M' },
+  { value: 2, label: 'Tuesday', shortLabel: 'T' },
+  { value: 3, label: 'Wednesday', shortLabel: 'W' },
+  { value: 4, label: 'Thursday', shortLabel: 'T' },
+  { value: 5, label: 'Friday', shortLabel: 'F' },
+  { value: 6, label: 'Saturday', shortLabel: 'S' },
+  { value: 0, label: 'Sunday', shortLabel: 'S' },
+];
+const DEFAULT_ALARM_DAYS: WeekdayIndex[] = [1, 2, 3, 4, 5];
 
 interface LiveSyncStep {
   label: string;
@@ -98,6 +110,7 @@ interface StoredBandAlarm {
   active: boolean;
   time: string;
   targetIso: string | null;
+  days: WeekdayIndex[];
 }
 
 const viewerQuery = makeFunctionReference<'query', Record<string, never>, ViewerInfo | null>('captures:viewer');
@@ -131,6 +144,7 @@ function loadStoredBandAlarm(): StoredBandAlarm {
     active: false,
     time: '07:00',
     targetIso: null,
+    days: DEFAULT_ALARM_DAYS,
   };
   if (typeof window === 'undefined') {
     return fallback;
@@ -143,10 +157,12 @@ function loadStoredBandAlarm(): StoredBandAlarm {
     const parsed = JSON.parse(rawValue) as Partial<StoredBandAlarm>;
     const active = parsed.active === true;
     const time = typeof parsed.time === 'string' && /^\d{2}:\d{2}$/.test(parsed.time) ? parsed.time : fallback.time;
+    const days = normalizeAlarmDays(parsed.days);
     return {
       active,
       time,
-      targetIso: active ? getNextAlarmDate(time).toISOString() : null,
+      days,
+      targetIso: active ? getNextAlarmDate(time, days).toISOString() : null,
     };
   } catch {
     return fallback;
@@ -197,6 +213,7 @@ function CaptureApp() {
   const [decoderStatus, setDecoderStatus] = useState<string | null>(null);
   const [alarmActive, setAlarmActive] = useState(initialBandAlarm.active);
   const [alarmTime, setAlarmTime] = useState(initialBandAlarm.time);
+  const [alarmDays, setAlarmDays] = useState<WeekdayIndex[]>(initialBandAlarm.days);
   const [alarmTargetIso, setAlarmTargetIso] = useState<string | null>(initialBandAlarm.targetIso);
   const [alarmMessage, setAlarmMessage] = useState(initialBandAlarm.active ? 'Alarm saved. Connect WHOOP to re-arm or update it.' : 'Connect WHOOP to set a band alarm.');
   const [now, setNow] = useState(Date.now());
@@ -208,6 +225,7 @@ function CaptureApp() {
   const autoSyncTimerRef = useRef<number | null>(null);
   const bandAlarmCommandCounterRef = useRef(0x70);
   const alarmTimeRef = useRef(initialBandAlarm.time);
+  const alarmDaysRef = useRef<WeekdayIndex[]>(initialBandAlarm.days);
   const alarmActiveRef = useRef(initialBandAlarm.active);
   const alarmTargetIsoRef = useRef<string | null>(initialBandAlarm.targetIso);
   const autoSyncInFlightRef = useRef(false);
@@ -354,13 +372,20 @@ function CaptureApp() {
     setStatus('Scan stopped');
   }
 
-  async function startScheduledBandAlarm(timeValue = alarmTimeRef.current, commandCharacteristic = whoopCommandCharacteristic): Promise<void> {
-    const target = getNextAlarmDate(timeValue);
+  async function startScheduledBandAlarm(
+    timeValue = alarmTimeRef.current,
+    commandCharacteristic = whoopCommandCharacteristic,
+    daysValue = alarmDaysRef.current,
+  ): Promise<void> {
+    const normalizedDays = normalizeAlarmDays(daysValue);
+    const target = getNextAlarmDate(timeValue, normalizedDays);
     alarmActiveRef.current = true;
+    alarmDaysRef.current = normalizedDays;
     alarmTargetIsoRef.current = target.toISOString();
     setAlarmActive(true);
+    setAlarmDays(normalizedDays);
     setAlarmTargetIso(target.toISOString());
-    saveStoredBandAlarm({ active: true, time: timeValue, targetIso: target.toISOString() });
+    saveStoredBandAlarm({ active: true, time: timeValue, days: normalizedDays, targetIso: target.toISOString() });
 
     if (!commandCharacteristic) {
       setAlarmMessage('Alarm saved. Reconnect WHOOP to write or re-arm it on the band.');
@@ -382,7 +407,7 @@ function CaptureApp() {
     alarmTargetIsoRef.current = null;
     setAlarmActive(false);
     setAlarmTargetIso(null);
-    saveStoredBandAlarm({ active: false, time: alarmTimeRef.current, targetIso: null });
+    saveStoredBandAlarm({ active: false, time: alarmTimeRef.current, days: alarmDaysRef.current, targetIso: null });
     setAlarmMessage(message);
   }
 
@@ -397,16 +422,42 @@ function CaptureApp() {
   function updateAlarmTime(value: string): void {
     alarmTimeRef.current = value;
     setAlarmTime(value);
-    const target = getNextAlarmDate(value);
+    const target = getNextAlarmDate(value, alarmDaysRef.current);
     if (alarmActive) {
       alarmTargetIsoRef.current = target.toISOString();
       setAlarmTargetIso(target.toISOString());
-      saveStoredBandAlarm({ active: true, time: value, targetIso: target.toISOString() });
-      void startScheduledBandAlarm(value);
+      saveStoredBandAlarm({ active: true, time: value, days: alarmDaysRef.current, targetIso: target.toISOString() });
+      void startScheduledBandAlarm(value, whoopCommandCharacteristic, alarmDaysRef.current);
     } else {
-      saveStoredBandAlarm({ active: false, time: value, targetIso: null });
+      saveStoredBandAlarm({ active: false, time: value, days: alarmDaysRef.current, targetIso: null });
     }
   }
+
+  function updateAlarmDays(nextDays: WeekdayIndex[]): void {
+    const normalizedDays = normalizeAlarmDays(nextDays);
+    alarmDaysRef.current = normalizedDays;
+    setAlarmDays(normalizedDays);
+    const target = getNextAlarmDate(alarmTimeRef.current, normalizedDays);
+    if (alarmActive) {
+      alarmTargetIsoRef.current = target.toISOString();
+      setAlarmTargetIso(target.toISOString());
+      saveStoredBandAlarm({ active: true, time: alarmTimeRef.current, days: normalizedDays, targetIso: target.toISOString() });
+      void startScheduledBandAlarm(alarmTimeRef.current, whoopCommandCharacteristic, normalizedDays);
+    } else {
+      saveStoredBandAlarm({ active: false, time: alarmTimeRef.current, days: normalizedDays, targetIso: null });
+    }
+  }
+
+  useEffect(() => {
+    if (!alarmActiveRef.current || !alarmTargetIsoRef.current) {
+      return;
+    }
+    const targetMs = new Date(alarmTargetIsoRef.current).getTime();
+    if (!Number.isFinite(targetMs) || targetMs > now - 5_000) {
+      return;
+    }
+    void startScheduledBandAlarm(alarmTimeRef.current, whoopCommandCharacteristic, alarmDaysRef.current);
+  }, [now, whoopCommandCharacteristic]);
 
   async function sendWhoopBandAlarmAt(commandCharacteristic: CharacteristicInfo, alarmTimeDate: Date): Promise<void> {
     const alarmUnixSeconds = Math.floor(alarmTimeDate.getTime() / 1000);
@@ -1273,8 +1324,10 @@ function CaptureApp() {
               : 'Connect WHOOP to set a band alarm.'
         }
         alarmTime={alarmTime}
+        alarmDays={alarmDays}
         alarmTargetIso={alarmTargetIso}
         onAlarmTimeChange={updateAlarmTime}
+        onAlarmDaysChange={updateAlarmDays}
         onToggleAlarm={toggleBandAlarm}
       />
       </div>
@@ -1784,8 +1837,10 @@ function TodayFeedPanel({
   alarmAvailable,
   alarmMessage,
   alarmTime,
+  alarmDays,
   alarmTargetIso,
   onAlarmTimeChange,
+  onAlarmDaysChange,
   onToggleAlarm,
 }: {
   report: HealthReport;
@@ -1798,8 +1853,10 @@ function TodayFeedPanel({
   alarmAvailable: boolean;
   alarmMessage: string;
   alarmTime: string;
+  alarmDays: WeekdayIndex[];
   alarmTargetIso: string | null;
   onAlarmTimeChange: (value: string) => void;
+  onAlarmDaysChange: (value: WeekdayIndex[]) => void;
   onToggleAlarm: () => void;
 }) {
   const stats = report.standard.heartRateStats;
@@ -1837,8 +1894,10 @@ function TodayFeedPanel({
         available={alarmAvailable}
         message={alarmMessage}
         alarmTime={alarmTime}
+        alarmDays={alarmDays}
         targetIso={alarmTargetIso}
         onTimeChange={onAlarmTimeChange}
+        onDaysChange={onAlarmDaysChange}
         onToggle={onToggleAlarm}
       />
     </details>
@@ -2056,20 +2115,31 @@ function AlarmControl({
   available,
   message,
   alarmTime,
+  alarmDays,
   targetIso,
   onTimeChange,
+  onDaysChange,
   onToggle,
 }: {
   active: boolean;
   available: boolean;
   message: string;
   alarmTime: string;
+  alarmDays: WeekdayIndex[];
   targetIso: string | null;
   onTimeChange: (value: string) => void;
+  onDaysChange: (value: WeekdayIndex[]) => void;
   onToggle: () => void;
 }) {
   const blocked = !available && !active;
   const targetLabel = targetIso ? formatAlarmTarget(new Date(targetIso)) : null;
+  const scheduleLabel = formatAlarmScheduleLabel(alarmDays);
+  function toggleDay(day: WeekdayIndex): void {
+    const hasDay = alarmDays.includes(day);
+    const nextDays = hasDay ? alarmDays.filter((item) => item !== day) : [...alarmDays, day];
+    onDaysChange(nextDays.length ? nextDays : [day]);
+  }
+
   return (
     <section className={`alarm-control ${active ? 'active' : blocked ? 'blocked' : 'idle'}`} aria-label="WHOOP band alarm">
       <div>
@@ -2079,6 +2149,7 @@ function AlarmControl({
         </span>
         <strong>{active ? 'On' : blocked ? 'Unavailable' : 'Ready'}</strong>
         <small>{message}</small>
+        <small>Schedule: {scheduleLabel}</small>
         {targetLabel && <small>Armed for {targetLabel}</small>}
       </div>
       <div className="alarm-actions">
@@ -2095,6 +2166,26 @@ function AlarmControl({
         <button type="button" onClick={onToggle} disabled={blocked} aria-pressed={active}>
           {active ? 'Turn Off' : 'Turn On'}
         </button>
+        <fieldset className="alarm-day-picker" aria-label="Alarm schedule days" disabled={!available && !active}>
+          <legend>Wake days</legend>
+          <div>
+            {WEEKDAY_OPTIONS.map((day) => {
+              const selected = alarmDays.includes(day.value);
+              return (
+                <button
+                  type="button"
+                  className={selected ? 'selected' : ''}
+                  key={day.value}
+                  onClick={() => toggleDay(day.value)}
+                  aria-pressed={selected}
+                  aria-label={`${selected ? 'Remove' : 'Add'} ${day.label}`}
+                >
+                  {day.shortLabel}
+                </button>
+              );
+            })}
+          </div>
+        </fieldset>
       </div>
     </section>
   );
@@ -2552,20 +2643,42 @@ function formatFeedDate(date: Date): string {
   }).format(date);
 }
 
-function getNextAlarmDate(timeValue: string): Date {
+function normalizeAlarmDays(value: unknown): WeekdayIndex[] {
+  const source = Array.isArray(value) ? value : DEFAULT_ALARM_DAYS;
+  const unique = Array.from(new Set(source))
+    .filter((day): day is WeekdayIndex => Number.isInteger(day) && day >= 0 && day <= 6)
+    .sort((a, b) => weekdaySortIndex(a) - weekdaySortIndex(b));
+  return unique.length ? unique : DEFAULT_ALARM_DAYS;
+}
+
+function weekdaySortIndex(day: WeekdayIndex): number {
+  return day === 0 ? 7 : day;
+}
+
+function getNextAlarmDate(timeValue: string, daysValue: WeekdayIndex[] = DEFAULT_ALARM_DAYS): Date {
   const [hourText, minuteText] = timeValue.split(':');
   const hours = Number(hourText);
   const minutes = Number(minuteText);
+  const selectedDays = new Set(normalizeAlarmDays(daysValue));
   const now = new Date();
-  const target = new Date(now);
-  target.setSeconds(0, 0);
-  target.setHours(Number.isFinite(hours) ? hours : 7, Number.isFinite(minutes) ? minutes : 0);
-
-  if (target.getTime() <= now.getTime() + 30_000) {
-    target.setDate(target.getDate() + 1);
+  for (let dayOffset = 0; dayOffset <= 7; dayOffset += 1) {
+    const target = new Date(now);
+    target.setDate(now.getDate() + dayOffset);
+    target.setSeconds(0, 0);
+    target.setHours(Number.isFinite(hours) ? hours : 7, Number.isFinite(minutes) ? minutes : 0);
+    if (!selectedDays.has(target.getDay() as WeekdayIndex)) {
+      continue;
+    }
+    if (target.getTime() > now.getTime() + 30_000) {
+      return target;
+    }
   }
 
-  return target;
+  const fallback = new Date(now);
+  fallback.setDate(now.getDate() + 1);
+  fallback.setSeconds(0, 0);
+  fallback.setHours(Number.isFinite(hours) ? hours : 7, Number.isFinite(minutes) ? minutes : 0);
+  return fallback;
 }
 
 function formatAlarmTarget(date: Date): string {
@@ -2577,6 +2690,21 @@ function formatAlarmTarget(date: Date): string {
   const dayDiff = Math.round((targetDay.getTime() - today.getTime()) / 86_400_000);
   const dayLabel = dayDiff === 0 ? 'today' : dayDiff === 1 ? 'tomorrow' : formatDateTime(date.toISOString());
   return `${dayLabel} at ${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+}
+
+function formatAlarmScheduleLabel(daysValue: WeekdayIndex[]): string {
+  const days = normalizeAlarmDays(daysValue);
+  const key = days.join(',');
+  if (key === DEFAULT_ALARM_DAYS.join(',')) {
+    return 'Mon-Fri';
+  }
+  if (key === '1,2,3,4,5,6,0') {
+    return 'Every day';
+  }
+  return days
+    .map((day) => WEEKDAY_OPTIONS.find((option) => option.value === day)?.label.slice(0, 3) ?? '')
+    .filter(Boolean)
+    .join(', ');
 }
 
 function formatDurationMinutes(minutes: number): string {
