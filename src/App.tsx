@@ -62,6 +62,15 @@ const FALLBACK_SLEEP_ESTIMATE = {
 
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
 type StepState = 'done' | 'active' | 'waiting' | 'error';
+type WorkspacePage = 'today' | 'sleep' | 'recovery' | 'strain' | 'live';
+
+const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string }> = [
+  { id: 'today', label: 'Today', detail: 'feed' },
+  { id: 'sleep', label: 'Sleep', detail: 'score' },
+  { id: 'recovery', label: 'Recovery', detail: 'readiness' },
+  { id: 'strain', label: 'Strain', detail: 'load' },
+  { id: 'live', label: 'Live', detail: 'connect' },
+];
 
 interface LiveSyncStep {
   label: string;
@@ -147,6 +156,7 @@ function CaptureApp() {
   const [alarmMessage, setAlarmMessage] = useState('Connect WHOOP to set a band alarm.');
   const [now, setNow] = useState(Date.now());
   const [acceptingConsent, setAcceptingConsent] = useState(false);
+  const [activeWorkspacePage, setActiveWorkspacePage] = useState<WorkspacePage>('today');
   const scanRef = useRef<BluetoothLEScan | null>(null);
   const advertisementHandlerRef = useRef<((event: Event) => void) | null>(null);
   const subscribedKeysRef = useRef<Set<string>>(new Set());
@@ -1058,6 +1068,29 @@ function CaptureApp() {
         </div>
       </header>
 
+      <nav className="workspace-tabs" aria-label="WHOOP workspace sections">
+        {WORKSPACE_PAGES.map((page) => (
+          <button
+            type="button"
+            className={activeWorkspacePage === page.id ? 'active' : ''}
+            key={page.id}
+            onClick={() => setActiveWorkspacePage(page.id)}
+          >
+            <span>{page.label}</span>
+            <small>{page.detail}</small>
+          </button>
+        ))}
+      </nav>
+
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'live'}>
+      <section className="workspace-page-heading">
+        <div>
+          <p className="eyebrow">Live / Connection</p>
+          <h2>Capture Pipeline</h2>
+          <p>Connect the band, watch the packet flow, and review developer tools only when you need them.</p>
+        </div>
+      </section>
+
       <section className="notice">
         <strong>Signed-in sync.</strong> This page talks directly to your WHOOP over Bluetooth, saves packets on this device, and automatically sends connected-session data to Convex after you accept the cloud sync disclosure.
       </section>
@@ -1149,7 +1182,9 @@ function CaptureApp() {
         {captureStartedAt && <p className="capture-start">Capture started {new Date(captureStartedAt).toLocaleTimeString()}.</p>}
         <ExportOutputPanel exportOutput={exportOutput} copyStatus={copyStatus} onCopy={copyExportOutput} onClose={() => setExportOutput(null)} />
       </section>
+      </div>
 
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'today'}>
       <TodayFeedPanel
         report={localHealthReport}
         latestHeartRate={latestHeartRate}
@@ -1173,7 +1208,21 @@ function CaptureApp() {
         onAlarmTimeChange={updateAlarmTime}
         onToggleAlarm={toggleBandAlarm}
       />
+      </div>
 
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'sleep'}>
+        <SleepScorePage report={localHealthReport} analysis={localSleepAnalysis} currentDate={new Date(now)} />
+      </div>
+
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'recovery'}>
+        <RecoveryPage report={localHealthReport} latestHeartRate={latestHeartRate} latestBattery={latestBattery} packetCount={packetCount} pipelineStatus={pipelineStatus} />
+      </div>
+
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'strain'}>
+        <StrainPage report={localHealthReport} latestHeartRate={latestHeartRate} packetCount={packetCount} />
+      </div>
+
+      <div className="workspace-page" hidden={activeWorkspacePage !== 'live'}>
       <details className="developer-tools">
         <summary>
           <span>Developer Tools</span>
@@ -1442,6 +1491,7 @@ function CaptureApp() {
       </section>
       </details>
       </details>
+      </div>
     </main>
   );
 }
@@ -1659,24 +1709,13 @@ function TodayFeedPanel({
 }) {
   const stats = report.standard.heartRateStats;
   const sleepDuration = report.sleep.estimatedDurationMinutes === undefined ? 'sleep window waiting' : `${formatDurationMinutes(report.sleep.estimatedDurationMinutes)} asleep`;
-  const sleepEstimate = buildSleepEstimateDisplay(report);
   const sleepScore = packetCount === 0 ? 'Waiting' : `${report.sleep.localScore}/100`;
   const sleepTone = packetCount === 0 ? 'neutral' : report.sleep.dataConfidence >= 45 ? 'good' : 'warn';
   const recovery = calculateRecoveryProxy(report);
   const strain = calculateTextStrain(report);
   const pipelineLabel = pipelineStatus?.ok ? 'Synced' : packetCount > 0 ? 'Ready' : 'Waiting';
   const pipelineDetail = pipelineStatus?.message ?? (packetCount > 0 ? `${packetCount} packets ready for pipeline` : 'connect to collect data');
-  const sleepStages = buildEstimatedSleepStages({
-    ...report.sleep,
-    estimatedDurationMinutes: sleepEstimate.durationMinutes,
-  });
-  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes, currentDate);
   const todayDateShort = formatFeedDate(currentDate);
-  const sleepEvidence = sleepEstimate.isFallback
-    ? 'Waiting for new capture'
-    : report.sleep.windowEvidencePoints > 0
-    ? `${report.sleep.windowEvidencePoints} trusted backlog points`
-    : 'Waiting for trusted backlog points';
 
   return (
     <details className="today-feed-panel" open>
@@ -1707,67 +1746,193 @@ function TodayFeedPanel({
         onTimeChange={onAlarmTimeChange}
         onToggle={onToggleAlarm}
       />
-      <section className="sleep-estimate-feed" aria-label="Estimated sleep details">
-        <div className="sleep-feed-header">
-          <div>
-            <strong>Sleep Estimate</strong>
-            <em>{sleepEstimate.dateLong}</em>
-            <span>{sleepEstimate.window}</span>
-          </div>
-          <small>{sleepEstimate.confidenceLabel}</small>
+    </details>
+  );
+}
+
+function SleepScorePage({
+  report,
+  analysis,
+  currentDate,
+}: {
+  report: HealthReport;
+  analysis: LocalSleepAnalysis;
+  currentDate: Date;
+}) {
+  return (
+    <section className="metric-page">
+      <div className="workspace-page-heading">
+        <div>
+          <p className="eyebrow">Sleep Score</p>
+          <h2>Morning Sleep Estimate</h2>
+          <p>Newest decoded sleep estimate from the morning capture, with saved fallback only when evidence is missing.</p>
         </div>
-        <div className="sleep-feed-summary">
-          <div>
-            <span>Time asleep</span>
-            <strong>{sleepEstimate.duration}</strong>
-          </div>
-          <div>
-            <span>Sleep window</span>
-            <strong>{sleepEstimate.window}</strong>
-          </div>
-          <div>
-            <span>BLE evidence</span>
-            <strong>{sleepEvidence}</strong>
-          </div>
+      </div>
+      <SleepEstimateCard report={report} currentDate={currentDate} />
+      <LocalSleepAnalysisPanel analysis={analysis} />
+    </section>
+  );
+}
+
+function SleepEstimateCard({ report, currentDate }: { report: HealthReport; currentDate: Date }) {
+  const sleepEstimate = buildSleepEstimateDisplay(report);
+  const sleepStages = buildEstimatedSleepStages({
+    ...report.sleep,
+    estimatedDurationMinutes: sleepEstimate.durationMinutes,
+  });
+  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes, currentDate);
+  const sleepEvidence = sleepEstimate.isFallback
+    ? 'Waiting for new capture'
+    : report.sleep.windowEvidencePoints > 0
+    ? `${report.sleep.windowEvidencePoints} trusted backlog points`
+    : 'Waiting for trusted backlog points';
+
+  return (
+    <section className="sleep-estimate-feed" aria-label="Estimated sleep details">
+      <div className="sleep-feed-header">
+        <div>
+          <strong>Sleep Estimate</strong>
+          <em>{sleepEstimate.dateLong}</em>
+          <span>{sleepEstimate.window}</span>
         </div>
-        <div className="sleep-validation-card">
-          <div>
-            <span>{sleepEstimate.sourceLabel}</span>
-            <strong>{sleepEstimate.date}</strong>
-          </div>
-          <p>
-            {sleepEstimate.window}, {sleepEstimate.duration}. {sleepEstimate.note}
-          </p>
+        <small>{sleepEstimate.confidenceLabel}</small>
+      </div>
+      <div className="sleep-feed-summary">
+        <div>
+          <span>Time asleep</span>
+          <strong>{sleepEstimate.duration}</strong>
         </div>
-        <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
-          <div className="sleep-extra-heading">
-            <strong>Local estimate metrics</strong>
-            <span>Not official WHOOP values</span>
-          </div>
-          <div className="sleep-extra-grid">
-            {extraSleepMetrics.map((metric) => (
-              <div className="sleep-extra-card" key={metric.label}>
-                <span>{metric.label}</span>
-                <strong>{metric.value}</strong>
-                {metric.subValue && <small>{metric.subValue}</small>}
-              </div>
-            ))}
-          </div>
+        <div>
+          <span>Sleep window</span>
+          <strong>{sleepEstimate.window}</strong>
         </div>
-        <div className="sleep-feed-stages">
-          {sleepStages.map((stage) => (
-            <div className="sleep-stage-row" key={stage.label}>
-              <div>
-                <span>{stage.label}</span>
-                <strong>{stage.value}</strong>
-              </div>
-              <meter min="0" max="100" value={stage.percent} />
+        <div>
+          <span>BLE evidence</span>
+          <strong>{sleepEvidence}</strong>
+        </div>
+      </div>
+      <div className="sleep-validation-card">
+        <div>
+          <span>{sleepEstimate.sourceLabel}</span>
+          <strong>{sleepEstimate.date}</strong>
+        </div>
+        <p>
+          {sleepEstimate.window}, {sleepEstimate.duration}. {sleepEstimate.note}
+        </p>
+      </div>
+      <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
+        <div className="sleep-extra-heading">
+          <strong>Local estimate metrics</strong>
+          <span>Not official WHOOP values</span>
+        </div>
+        <div className="sleep-extra-grid">
+          {extraSleepMetrics.map((metric) => (
+            <div className="sleep-extra-card" key={metric.label}>
+              <span>{metric.label}</span>
+              <strong>{metric.value}</strong>
+              {metric.subValue && <small>{metric.subValue}</small>}
             </div>
           ))}
         </div>
-        <p>{report.sleep.estimatedDurationMinutes === undefined ? 'Stages will appear after a morning reconnect provides enough overnight timestamps.' : 'Stage split is estimated from duration, HR stability, HRV proxy, and data confidence. It is not an official WHOOP sleep-stage decode.'}</p>
-      </section>
-    </details>
+      </div>
+      <div className="sleep-feed-stages">
+        {sleepStages.map((stage) => (
+          <div className="sleep-stage-row" key={stage.label}>
+            <div>
+              <span>{stage.label}</span>
+              <strong>{stage.value}</strong>
+            </div>
+            <meter min="0" max="100" value={stage.percent} />
+          </div>
+        ))}
+      </div>
+      <p>{report.sleep.estimatedDurationMinutes === undefined ? 'Stages will appear after a morning reconnect provides enough overnight timestamps.' : 'Stage split is estimated from duration, HR stability, HRV proxy, and data confidence. It is not an official WHOOP sleep-stage decode.'}</p>
+    </section>
+  );
+}
+
+function RecoveryPage({
+  report,
+  latestHeartRate,
+  latestBattery,
+  packetCount,
+  pipelineStatus,
+}: {
+  report: HealthReport;
+  latestHeartRate?: HeartRateReading;
+  latestBattery?: BatteryReading;
+  packetCount: number;
+  pipelineStatus: PipelineSyncResult | null;
+}) {
+  const recovery = calculateRecoveryProxy(report);
+  const recoveryTone = recovery === undefined ? 'neutral' : recovery >= 70 ? 'good' : recovery < 55 ? 'warn' : 'neutral';
+  const sleepDuration = report.sleep.estimatedDurationMinutes === undefined ? 'Waiting' : formatDurationMinutes(report.sleep.estimatedDurationMinutes);
+  const restingHeartRate = report.sleep.hrStats?.min ?? report.standard.heartRateStats?.min;
+  const hrv = report.sleep.hrvProxy?.rmssdMs ?? report.standard.rmssdMs;
+
+  return (
+    <section className="metric-page">
+      <div className="workspace-page-heading">
+        <div>
+          <p className="eyebrow">Recovery</p>
+          <h2>Readiness Estimate</h2>
+          <p>Local recovery combines sleep, HR, HRV proxy, and data confidence from the capture.</p>
+        </div>
+      </div>
+      <article className={`page-hero-metric ${recoveryTone}`}>
+        <span>Recovery</span>
+        <strong>{recovery === undefined ? 'Waiting' : `${recovery}/100`}</strong>
+        <small>{recovery === undefined ? 'Needs sleep or HRV evidence' : 'Local sleep + HR/HRV proxy'}</small>
+      </article>
+      <div className="page-metric-grid">
+        <Signal label="Sleep performance" value={report.sleep.estimatedDurationMinutes === undefined ? 'Waiting' : `${report.sleep.localScore}/100`} subValue={`${sleepDuration} asleep`} tone={report.sleep.dataConfidence >= 45 ? 'good' : 'warn'} />
+        <Signal label="HRV" value={hrv === undefined ? 'Waiting' : `${hrv} ms`} subValue="RMSSD proxy" tone={hrv === undefined ? 'neutral' : 'good'} />
+        <Signal label="Resting HR" value={restingHeartRate === undefined ? 'Waiting' : `${restingHeartRate} bpm`} subValue="lowest sleep/local HR" tone={restingHeartRate === undefined ? 'neutral' : 'good'} />
+        <Signal label="Live HR" value={latestHeartRate ? `${latestHeartRate.bpm} bpm` : 'Waiting'} subValue="current capture" tone={latestHeartRate ? 'good' : 'neutral'} />
+        <Signal label="Battery" value={latestBattery ? `${latestBattery.percentage}%` : 'Waiting'} subValue="WHOOP battery packet" tone={latestBattery ? 'good' : 'neutral'} />
+        <Signal label="Pipeline" value={pipelineStatus?.ok ? 'Synced' : packetCount > 0 ? 'Ready' : 'Waiting'} subValue={pipelineStatus?.message ?? `${packetCount} packets`} tone={pipelineStatus?.ok ? 'good' : packetCount > 0 ? 'warn' : 'neutral'} />
+      </div>
+    </section>
+  );
+}
+
+function StrainPage({
+  report,
+  latestHeartRate,
+  packetCount,
+}: {
+  report: HealthReport;
+  latestHeartRate?: HeartRateReading;
+  packetCount: number;
+}) {
+  const stats = report.standard.heartRateStats;
+  const strain = calculateTextStrain(report);
+  const stressScore = calculateStressMonitorProxy(report);
+  const strainTone = strain === undefined ? 'neutral' : strain >= 10 ? 'warn' : 'good';
+
+  return (
+    <section className="metric-page">
+      <div className="workspace-page-heading">
+        <div>
+          <p className="eyebrow">Strain</p>
+          <h2>Heart Load Estimate</h2>
+          <p>Local strain is estimated from heart-rate load and packet volume captured in the browser.</p>
+        </div>
+      </div>
+      <article className={`page-hero-metric ${strainTone}`}>
+        <span>Strain</span>
+        <strong>{strain === undefined ? 'Waiting' : `${strain}/21`}</strong>
+        <small>{strain === undefined ? 'Needs heart-rate data' : 'Local HR load proxy'}</small>
+      </article>
+      <div className="page-metric-grid">
+        <Signal label="Live HR" value={latestHeartRate ? `${latestHeartRate.bpm} bpm` : 'Waiting'} subValue="current capture" tone={latestHeartRate ? 'good' : 'neutral'} />
+        <Signal label="Average HR" value={stats ? `${stats.avg} bpm` : 'Waiting'} subValue={stats ? `${stats.samples} samples` : 'needs HR data'} tone={stats ? 'good' : 'neutral'} />
+        <Signal label="Max HR" value={stats ? `${stats.max} bpm` : 'Waiting'} subValue={stats ? `${stats.min} min` : 'needs HR data'} tone={stats ? 'good' : 'neutral'} />
+        <Signal label="Stress monitor" value={stressScore === undefined ? 'Waiting' : `${stressScore}/100`} subValue="local HR load proxy" tone={stressScore === undefined ? 'neutral' : stressScore > 70 ? 'warn' : 'good'} />
+        <Signal label="RR / HRV" value={report.standard.rmssdMs === undefined ? 'Waiting' : `${report.standard.rmssdMs} ms`} subValue={`${report.standard.rrIntervals} RR intervals`} tone={report.standard.rmssdMs === undefined ? 'neutral' : 'good'} />
+        <Signal label="Captured" value={String(packetCount)} subValue="local packets stored" tone={packetCount > 0 ? 'good' : 'neutral'} />
+      </div>
+    </section>
   );
 }
 
