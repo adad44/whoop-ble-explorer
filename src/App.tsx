@@ -52,6 +52,8 @@ const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
 const BAND_ALARM_STORAGE_KEY = 'whoop-band-alarm-preference';
+const MIN_DYNAMIC_SLEEP_EVIDENCE_POINTS = 4;
+const MIN_DYNAMIC_SLEEP_CONFIDENCE = 60;
 const FALLBACK_SLEEP_ESTIMATE = {
   date: 'Jun 4, 2026',
   dateLong: 'Thu, Jun 4, 2026',
@@ -2346,8 +2348,18 @@ function LocalSleepAnalysisPanel({
 }: {
   analysis: LocalSleepAnalysis;
 }) {
-  const scoreTone = analysis.dataConfidence >= 45 ? 'good' : 'warn';
   const sleepEstimate = buildSleepEstimateDisplayFromSleep(analysis);
+  const scoreTone = sleepEstimate.isFallback ? 'neutral' : analysis.dataConfidence >= 45 ? 'good' : 'warn';
+  const evidenceValue = sleepEstimate.isFallback
+    ? 'Waiting'
+    : analysis.windowEvidencePoints
+    ? `${analysis.windowEvidencePoints} points`
+    : 'Waiting';
+  const evidenceDetail = sleepEstimate.isFallback
+    ? `needs ${MIN_DYNAMIC_SLEEP_EVIDENCE_POINTS} points and ${MIN_DYNAMIC_SLEEP_CONFIDENCE}% confidence`
+    : analysis.windowSource === 'trusted_backlog'
+    ? 'trusted backlog timestamps'
+    : 'automatic decoder';
   return (
     <section className="panel sleep-panel">
       <div className="section-heading">
@@ -2361,13 +2373,13 @@ function LocalSleepAnalysisPanel({
       <div className="sleep-score-row">
         <article className={`sleep-score ${scoreTone}`}>
           <span>Local Score</span>
-          <strong>{analysis.localScore}</strong>
-          <small>{analysis.confidenceLabel} confidence</small>
+          <strong>{sleepEstimate.isFallback ? 'Saved' : analysis.localScore}</strong>
+          <small>{sleepEstimate.confidenceLabel}</small>
         </article>
-        <Signal label="Estimated Start" value={analysis.estimatedStartIso ? formatDateTime(analysis.estimatedStartIso) : 'Unknown'} />
-        <Signal label="Estimated End" value={analysis.estimatedEndIso ? formatDateTime(analysis.estimatedEndIso) : 'Unknown'} />
-        <Signal label="Time Asleep" value={analysis.estimatedDurationMinutes === undefined ? 'Unknown' : formatDurationMinutes(analysis.estimatedDurationMinutes)} />
-        <Signal label="BLE Evidence" value={analysis.windowEvidencePoints ? `${analysis.windowEvidencePoints} points` : 'Waiting'} subValue={analysis.windowSource === 'trusted_backlog' ? 'trusted backlog timestamps' : 'automatic decoder'} tone={analysis.windowEvidencePoints ? 'good' : 'neutral'} />
+        <Signal label="Estimate Date" value={sleepEstimate.date} />
+        <Signal label="Sleep Window" value={sleepEstimate.window} />
+        <Signal label="Time Asleep" value={sleepEstimate.duration.replace(' asleep', '')} />
+        <Signal label="BLE Evidence" value={evidenceValue} subValue={evidenceDetail} tone={!sleepEstimate.isFallback && analysis.windowEvidencePoints ? 'good' : 'neutral'} />
       </div>
 
       <div className="sleep-score-row">
@@ -2377,20 +2389,22 @@ function LocalSleepAnalysisPanel({
         <Signal label="Data Confidence" value={`${analysis.dataConfidence}%`} subValue={analysis.confidenceLabel} />
       </div>
 
-      <div className="sleep-breakdown">
-        <h3>Why This Score</h3>
-        {analysis.breakdown.map((item) => (
-          <article className="sleep-breakdown-item" key={item.label}>
-            <div>
-              <strong>{item.label}</strong>
-              <span>{item.weight}% weight</span>
-            </div>
-            <meter min="0" max="100" value={item.score} />
-            <span>{item.score}/100</span>
-            <p>{item.reason}</p>
-          </article>
-        ))}
-      </div>
+      {!sleepEstimate.isFallback && (
+        <div className="sleep-breakdown">
+          <h3>Why This Score</h3>
+          {analysis.breakdown.map((item) => (
+            <article className="sleep-breakdown-item" key={item.label}>
+              <div>
+                <strong>{item.label}</strong>
+                <span>{item.weight}% weight</span>
+              </div>
+              <meter min="0" max="100" value={item.score} />
+              <span>{item.score}/100</span>
+              <p>{item.reason}</p>
+            </article>
+          ))}
+        </div>
+      )}
 
       <div className="sleep-notes">
         <p>
@@ -2612,7 +2626,9 @@ function buildSleepEstimateDisplayFromSleep(analysis: LocalSleepAnalysis): Sleep
     && Number.isFinite(duration)
     && duration > 0
     && duration <= 14 * 60
-    && analysis.windowEvidencePoints > 0,
+    && analysis.windowEvidencePoints >= MIN_DYNAMIC_SLEEP_EVIDENCE_POINTS
+    && analysis.dataConfidence >= MIN_DYNAMIC_SLEEP_CONFIDENCE
+    && isNewerThanFallbackSleepDate(analysis.estimatedEndIso),
   );
 
   if (!hasCapturedEstimate || !analysis.estimatedStartIso || !analysis.estimatedEndIso || duration === undefined) {
@@ -2631,7 +2647,7 @@ function buildSleepEstimateDisplayFromSleep(analysis: LocalSleepAnalysis): Sleep
     window: `${formatClockTime(analysis.estimatedStartIso)} - ${formatClockTime(analysis.estimatedEndIso)}`,
     duration: `${formatDurationMinutes(duration)} asleep`,
     durationMinutes: duration,
-    note: `${evidenceLabel} decoded from the latest morning capture. This replaces the saved estimate when enough sleep evidence is available.`,
+    note: `${evidenceLabel} decoded from the latest morning capture. This replaces the saved estimate only after enough sleep evidence is available.`,
     sourceLabel: 'Morning capture',
     confidenceLabel: `${analysis.confidenceLabel} confidence`,
     isFallback: false,
@@ -2644,6 +2660,18 @@ function formatSleepEstimateDate(iso: string): string {
     day: 'numeric',
     year: 'numeric',
   }).format(new Date(iso));
+}
+
+function isNewerThanFallbackSleepDate(iso: string): boolean {
+  const estimateDay = startOfLocalDay(new Date(iso)).getTime();
+  const fallbackDay = startOfLocalDay(new Date(FALLBACK_SLEEP_ESTIMATE.date)).getTime();
+  return Number.isFinite(estimateDay) && Number.isFinite(fallbackDay) && estimateDay > fallbackDay;
+}
+
+function startOfLocalDay(date: Date): Date {
+  const day = new Date(date);
+  day.setHours(0, 0, 0, 0);
+  return day;
 }
 
 function formatSleepEstimateDateLong(iso: string): string {
@@ -2668,7 +2696,7 @@ function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSlee
   const timeInBedMinutes = asleepMinutes + awakeMinutes + latencyMinutes;
   const sleepEfficiency = Math.round((asleepMinutes / Math.max(1, timeInBedMinutes)) * 100);
   const sleepNeedMinutes = estimateSleepNeedMinutes(report);
-  const weeklySleepDebtMinutes = estimateWeeklySleepDebtMinutes(sleepNeedMinutes, asleepMinutes, currentDate);
+  const weeklySleepDebtMinutes = estimateWeeklySleepDebtMinutes(sleepNeedMinutes, asleepMinutes);
   const restingHeartRate = report.sleep.hrStats?.min ?? report.standard.heartRateStats?.min;
   const stressScore = calculateStressMonitorProxy(report);
 
@@ -2701,7 +2729,7 @@ function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSlee
     {
       label: 'Sleep debt',
       value: weeklySleepDebtMinutes > 0 ? formatDurationMinutes(weeklySleepDebtMinutes) : 'None',
-      subValue: 'weekly reset',
+      subValue: `weekly reset (${formatWeekResetLabel(currentDate)})`,
     },
     {
       label: 'Resting HR',
@@ -2740,11 +2768,13 @@ function estimateSleepNeedMinutes(report: HealthReport): number {
   return clampNumber(480 + recoveryAdjustment + strainAdjustment, 450, 540);
 }
 
-function estimateWeeklySleepDebtMinutes(sleepNeedMinutes: number, asleepMinutes: number, currentDate: Date): number {
-  const weekDayCount = getCurrentWeekDayCount(currentDate);
-  const weeklyNeedMinutes = sleepNeedMinutes * weekDayCount;
-  const estimatedWeeklySleepMinutes = asleepMinutes * weekDayCount;
-  return Math.max(0, Math.round(weeklyNeedMinutes - estimatedWeeklySleepMinutes));
+function estimateWeeklySleepDebtMinutes(sleepNeedMinutes: number, asleepMinutes: number): number {
+  return Math.max(0, Math.round(sleepNeedMinutes - asleepMinutes));
+}
+
+function formatWeekResetLabel(currentDate: Date): string {
+  const dayCount = getCurrentWeekDayCount(currentDate);
+  return `day ${dayCount}`;
 }
 
 function getCurrentWeekDayCount(currentDate: Date): number {
