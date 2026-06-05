@@ -51,6 +51,7 @@ const WHOOP_PROPRIETARY_SERVICE = '61080001-8d6d-82b8-614a-1c8cb0f8dcc6';
 const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
+const BAND_ALARM_STORAGE_KEY = 'whoop-band-alarm-preference';
 const FALLBACK_SLEEP_ESTIMATE = {
   date: 'Jun 4, 2026',
   dateLong: 'Thu, Jun 4, 2026',
@@ -90,6 +91,12 @@ interface ConsentStatus {
   acceptedAt?: string;
 }
 
+interface StoredBandAlarm {
+  active: boolean;
+  time: string;
+  targetIso: string | null;
+}
+
 const viewerQuery = makeFunctionReference<'query', Record<string, never>, ViewerInfo | null>('captures:viewer');
 const currentUserConsentQuery = makeFunctionReference<'query', { version: string }, ConsentStatus>('captures:currentUserConsent');
 const acceptDataConsentMutation = makeFunctionReference<'mutation', { version: string }, ConsentStatus>('captures:acceptDataConsent');
@@ -116,12 +123,47 @@ export default function App() {
   );
 }
 
+function loadStoredBandAlarm(): StoredBandAlarm {
+  const fallback: StoredBandAlarm = {
+    active: false,
+    time: '07:00',
+    targetIso: null,
+  };
+  if (typeof window === 'undefined') {
+    return fallback;
+  }
+  try {
+    const rawValue = window.localStorage.getItem(BAND_ALARM_STORAGE_KEY);
+    if (!rawValue) {
+      return fallback;
+    }
+    const parsed = JSON.parse(rawValue) as Partial<StoredBandAlarm>;
+    const active = parsed.active === true;
+    const time = typeof parsed.time === 'string' && /^\d{2}:\d{2}$/.test(parsed.time) ? parsed.time : fallback.time;
+    return {
+      active,
+      time,
+      targetIso: active ? getNextAlarmDate(time).toISOString() : null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveStoredBandAlarm(value: StoredBandAlarm): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  window.localStorage.setItem(BAND_ALARM_STORAGE_KEY, JSON.stringify(value));
+}
+
 function CaptureApp() {
   const authToken = useAuthToken();
   const { signOut } = useAuthActions();
   const viewer = useQuery(viewerQuery, {});
   const consentStatus = useQuery(currentUserConsentQuery, { version: DATA_CONSENT_VERSION });
   const acceptDataConsent = useMutation(acceptDataConsentMutation);
+  const initialBandAlarm = useMemo(loadStoredBandAlarm, []);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [status, setStatus] = useState('Ready');
   const [error, setError] = useState<string | null>(null);
@@ -150,10 +192,10 @@ function CaptureApp() {
   const [pipelineStatus, setPipelineStatus] = useState<PipelineSyncResult | null>(null);
   const [importedHealthReport, setImportedHealthReport] = useState<HealthReport | null>(null);
   const [decoderStatus, setDecoderStatus] = useState<string | null>(null);
-  const [alarmActive, setAlarmActive] = useState(false);
-  const [alarmTime, setAlarmTime] = useState('07:00');
-  const [alarmTargetIso, setAlarmTargetIso] = useState<string | null>(null);
-  const [alarmMessage, setAlarmMessage] = useState('Connect WHOOP to set a band alarm.');
+  const [alarmActive, setAlarmActive] = useState(initialBandAlarm.active);
+  const [alarmTime, setAlarmTime] = useState(initialBandAlarm.time);
+  const [alarmTargetIso, setAlarmTargetIso] = useState<string | null>(initialBandAlarm.targetIso);
+  const [alarmMessage, setAlarmMessage] = useState(initialBandAlarm.active ? 'Alarm saved. Connect WHOOP to re-arm or update it.' : 'Connect WHOOP to set a band alarm.');
   const [now, setNow] = useState(Date.now());
   const [acceptingConsent, setAcceptingConsent] = useState(false);
   const [activeWorkspacePage, setActiveWorkspacePage] = useState<WorkspacePage>('today');
@@ -162,7 +204,9 @@ function CaptureApp() {
   const subscribedKeysRef = useRef<Set<string>>(new Set());
   const autoSyncTimerRef = useRef<number | null>(null);
   const bandAlarmCommandCounterRef = useRef(0x70);
-  const alarmTimeRef = useRef('07:00');
+  const alarmTimeRef = useRef(initialBandAlarm.time);
+  const alarmActiveRef = useRef(initialBandAlarm.active);
+  const alarmTargetIsoRef = useRef<string | null>(initialBandAlarm.targetIso);
   const autoSyncInFlightRef = useRef(false);
   const autoCaptureActiveRef = useRef(false);
   const lastAutoSyncedPacketCountRef = useRef(0);
@@ -307,32 +351,35 @@ function CaptureApp() {
     setStatus('Scan stopped');
   }
 
-  async function startScheduledBandAlarm(timeValue = alarmTimeRef.current): Promise<void> {
-    if (!whoopCommandCharacteristic) {
-      setAlarmActive(false);
-      setAlarmMessage('WHOOP band command characteristic is not available. Reconnect and keep the proprietary service enabled.');
-      return;
-    }
-
+  async function startScheduledBandAlarm(timeValue = alarmTimeRef.current, commandCharacteristic = whoopCommandCharacteristic): Promise<void> {
     const target = getNextAlarmDate(timeValue);
-
-    try {
-      await sendWhoopBandAlarmAt(whoopCommandCharacteristic, target);
-    } catch (alarmError) {
-      setAlarmActive(false);
-      setAlarmTargetIso(null);
-      setAlarmMessage(`WHOOP band alarm write failed: ${errorMessage(alarmError)}`);
-      return;
-    }
-
+    alarmActiveRef.current = true;
+    alarmTargetIsoRef.current = target.toISOString();
     setAlarmActive(true);
     setAlarmTargetIso(target.toISOString());
+    saveStoredBandAlarm({ active: true, time: timeValue, targetIso: target.toISOString() });
+
+    if (!commandCharacteristic) {
+      setAlarmMessage('Alarm saved. Reconnect WHOOP to write or re-arm it on the band.');
+      return;
+    }
+
+    try {
+      await sendWhoopBandAlarmAt(commandCharacteristic, target);
+    } catch (alarmError) {
+      setAlarmMessage(`Alarm saved, but the band write failed: ${errorMessage(alarmError)}. Reconnect WHOOP to retry.`);
+      return;
+    }
+
     setAlarmMessage(`On. WHOOP band alarm set for ${formatAlarmTarget(target)}.`);
   }
 
   function stopBandAlarm(message = 'Off. This page will not re-arm the band alarm. WHOOP does not expose a reliable cancel/read-back command over BLE.'): void {
+    alarmActiveRef.current = false;
+    alarmTargetIsoRef.current = null;
     setAlarmActive(false);
     setAlarmTargetIso(null);
+    saveStoredBandAlarm({ active: false, time: alarmTimeRef.current, targetIso: null });
     setAlarmMessage(message);
   }
 
@@ -347,8 +394,14 @@ function CaptureApp() {
   function updateAlarmTime(value: string): void {
     alarmTimeRef.current = value;
     setAlarmTime(value);
+    const target = getNextAlarmDate(value);
     if (alarmActive) {
+      alarmTargetIsoRef.current = target.toISOString();
+      setAlarmTargetIso(target.toISOString());
+      saveStoredBandAlarm({ active: true, time: value, targetIso: target.toISOString() });
       void startScheduledBandAlarm(value);
+    } else {
+      saveStoredBandAlarm({ active: false, time: value, targetIso: null });
     }
   }
 
@@ -432,7 +485,9 @@ function CaptureApp() {
         setConnectedDevice(null);
         setAutoSyncStage('idle');
         setAutoSyncMessage('WHOOP disconnected. Connect again to capture and sync.');
-        stopBandAlarm('WHOOP disconnected. Alarm disabled in this page.');
+        if (alarmActiveRef.current) {
+          setAlarmMessage('Alarm saved. Reconnect WHOOP to re-arm or update it.');
+        }
         autoCaptureActiveRef.current = false;
         subscribedKeysRef.current.clear();
       });
@@ -449,6 +504,12 @@ function CaptureApp() {
       setSelected(discovered[0]?.characteristics[0] ?? null);
       setStatus(`Connected to ${device.name ?? device.id}`);
       await readStandardValues(discovered);
+      const discoveredCommandCharacteristic = discovered
+        .flatMap((service) => service.characteristics)
+        .find((item) => item.uuid === WHOOP_COMMAND_CHARACTERISTIC && (item.properties.write || item.properties.writeWithoutResponse));
+      if (alarmActiveRef.current) {
+        await startScheduledBandAlarm(alarmTimeRef.current, discoveredCommandCharacteristic);
+      }
       if (autoCaptureEnabled) {
         await startDataCapture(discovered, true);
       } else {
@@ -1195,7 +1256,9 @@ function CaptureApp() {
         alarmActive={alarmActive}
         alarmAvailable={bandAlarmAvailable}
         alarmMessage={
-          bandAlarmAvailable
+          alarmActive
+            ? alarmMessage
+            : bandAlarmAvailable
             ? alarmMessage.startsWith('Connect WHOOP')
               ? 'Ready. Pick a time and turn on the WHOOP band alarm.'
               : alarmMessage
@@ -1953,7 +2016,7 @@ function AlarmControl({
   onTimeChange: (value: string) => void;
   onToggle: () => void;
 }) {
-  const blocked = !available;
+  const blocked = !available && !active;
   const targetLabel = targetIso ? formatAlarmTarget(new Date(targetIso)) : null;
   return (
     <section className={`alarm-control ${active ? 'active' : blocked ? 'blocked' : 'idle'}`} aria-label="WHOOP band alarm">
@@ -1973,7 +2036,7 @@ function AlarmControl({
             type="time"
             value={alarmTime}
             onChange={(event) => onTimeChange(event.target.value)}
-            disabled={blocked}
+            disabled={!available && !active}
             aria-label="WHOOP band alarm time"
           />
         </label>
