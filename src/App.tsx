@@ -60,7 +60,7 @@ const FALLBACK_SLEEP_ESTIMATE = {
   window: '1:15 AM - 7:27 AM',
   duration: '6h 12m asleep',
   durationMinutes: 372,
-  note: 'Saved estimate line. A new morning capture replaces this once enough BLE sleep evidence is decoded.',
+  note: 'Last trusted estimate from the local BLE sleep process. A new morning capture replaces it only when enough sleep evidence is decoded.',
 };
 
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
@@ -1919,7 +1919,7 @@ function SleepScorePage({
         <div>
           <p className="eyebrow">Sleep Score</p>
           <h2>Morning Sleep Estimate</h2>
-          <p>Newest decoded sleep estimate from the morning capture, with saved fallback only when evidence is missing.</p>
+          <p>Newest decoded sleep estimate from the morning capture. If evidence is weak, the app keeps the last trusted estimate instead of guessing.</p>
         </div>
       </div>
       <SleepEstimateCard report={report} currentDate={currentDate} />
@@ -1942,7 +1942,7 @@ function SleepEstimateCard({ report, currentDate }: { report: HealthReport; curr
   });
   const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes, currentDate);
   const sleepEvidence = sleepEstimate.isFallback
-    ? 'Waiting for new capture'
+    ? 'Last trusted process output'
     : report.sleep.windowEvidencePoints > 0
     ? `${report.sleep.windowEvidencePoints} trusted backlog points`
     : 'Waiting for trusted backlog points';
@@ -2812,8 +2812,8 @@ function buildSleepEstimateDisplayFromSleep(analysis: LocalSleepAnalysis): Sleep
   if (!hasCapturedEstimate || !analysis.estimatedStartIso || !analysis.estimatedEndIso || duration === undefined) {
     return {
       ...FALLBACK_SLEEP_ESTIMATE,
-      sourceLabel: 'Saved estimate',
-      confidenceLabel: 'waiting for new capture',
+      sourceLabel: 'Last trusted estimate',
+      confidenceLabel: 'waiting for stronger capture',
       isFallback: true,
     };
   }
@@ -3166,12 +3166,12 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
     return day === latestDay;
   });
   const dayReadings = dailyReadings.length ? dailyReadings : validReadings.slice(-120);
-  const baseline = Math.max(45, Math.min(...dayReadings.map((reading) => reading.bpm)) - 3);
+  const restingFloor = Math.max(45, Math.min(...dayReadings.map((reading) => reading.bpm)) - 3);
   const strainPoints = dayReadings.map((reading) => ({
     timestamp: reading.timestamp,
     timeMs: reading.timeMs,
     bpm: reading.bpm,
-    score: calculateReadingStrainLoad(reading.bpm, baseline),
+    score: calculateReadingStrainLoad(reading.bpm, restingFloor),
   }));
   const firstTime = strainPoints[0].timeMs;
   const lastTime = strainPoints[strainPoints.length - 1].timeMs;
@@ -3228,10 +3228,10 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
   );
 }
 
-function calculateReadingStrainLoad(bpm: number, baseline: number): number {
-  const elevatedFromBaseline = Math.max(0, bpm - baseline);
+function calculateReadingStrainLoad(bpm: number, restingFloor: number): number {
+  const elevatedFromRestingFloor = Math.max(0, bpm - restingFloor);
   const highHrLoad = Math.max(0, bpm - 95);
-  const score = 1 + elevatedFromBaseline / 6 + highHrLoad / 10;
+  const score = 1 + elevatedFromRestingFloor / 6 + highHrLoad / 10;
   return Math.round(clampNumber(score, 0, 21) * 10) / 10;
 }
 

@@ -38,6 +38,13 @@ export default defineSchema({
     localSleepScore: v.number(),
     localSleepConfidence: v.string(),
     localSleepConfidencePercent: v.number(),
+    localSleepEstimateMode: v.optional(v.string()),
+    localSleepWindowSource: v.optional(v.string()),
+    localSleepWindowEvidencePoints: v.optional(v.number()),
+    localSleepWindowStart: v.optional(v.string()),
+    localSleepWindowEnd: v.optional(v.string()),
+    localSleepWindowDurationMinutes: v.optional(v.number()),
+    localSleepProcessNote: v.optional(v.string()),
   })
     .index('by_user_uploadedAt', ['userId', 'uploadedAt'])
     .index('by_user_sessionId', ['userId', 'sessionId'])

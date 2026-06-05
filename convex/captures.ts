@@ -25,6 +25,13 @@ const captureValidator = v.object({
   localSleepScore: v.number(),
   localSleepConfidence: v.string(),
   localSleepConfidencePercent: v.number(),
+  localSleepEstimateMode: v.optional(v.string()),
+  localSleepWindowSource: v.optional(v.string()),
+  localSleepWindowEvidencePoints: v.optional(v.number()),
+  localSleepWindowStart: v.optional(v.string()),
+  localSleepWindowEnd: v.optional(v.string()),
+  localSleepWindowDurationMinutes: v.optional(v.number()),
+  localSleepProcessNote: v.optional(v.string()),
 });
 
 const packetValidator = v.object({

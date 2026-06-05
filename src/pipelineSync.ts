@@ -6,6 +6,16 @@ import { decodeWhoopProprietaryFrames } from './utils';
 
 export type CaptureLabel = 'morning_reconnect' | 'awake' | 'sleep' | 'exercise' | 'charging' | 'custom';
 
+const MIN_SYNC_SLEEP_EVIDENCE_POINTS = 4;
+const MIN_SYNC_SLEEP_CONFIDENCE = 60;
+const LAST_TRUSTED_SLEEP_ESTIMATE = {
+  date: 'Jun 4, 2026',
+  windowStart: '1:15 AM',
+  windowEnd: '7:27 AM',
+  durationMinutes: 372,
+  processNote: 'Last trusted estimate from the local BLE sleep process. Current capture must beat the evidence gate before replacing it.',
+};
+
 interface ReportedSleepSnapshot {
   startLabel: string;
   endLabel: string;
@@ -110,6 +120,7 @@ function buildSyncPayload(input: PipelineSyncInput, frameDecodes: WhoopProprieta
   const lastPacket = sortedPackets[sortedPackets.length - 1];
   const clientId = getOrCreateClientId();
   const uploadedAt = new Date().toISOString();
+  const sleepEstimateMetadata = buildSleepEstimateMetadata(input.localSleep);
 
   const capture = {
     clientId,
@@ -134,6 +145,13 @@ function buildSyncPayload(input: PipelineSyncInput, frameDecodes: WhoopProprieta
     localSleepScore: input.localSleep.localScore,
     localSleepConfidence: input.localSleep.confidenceLabel,
     localSleepConfidencePercent: input.localSleep.dataConfidence,
+    localSleepEstimateMode: sleepEstimateMetadata.mode,
+    localSleepWindowSource: sleepEstimateMetadata.windowSource,
+    localSleepWindowEvidencePoints: sleepEstimateMetadata.windowEvidencePoints,
+    localSleepWindowStart: sleepEstimateMetadata.windowStart,
+    localSleepWindowEnd: sleepEstimateMetadata.windowEnd,
+    localSleepWindowDurationMinutes: sleepEstimateMetadata.durationMinutes,
+    localSleepProcessNote: sleepEstimateMetadata.processNote,
   };
 
   const packets = input.packets.map((packet, index) => ({
@@ -201,6 +219,7 @@ function buildSyncPayload(input: PipelineSyncInput, frameDecodes: WhoopProprieta
       timestamp: uploadedAt,
       data: {
         reportedSleep: input.reportedSleep,
+        displayEstimate: sleepEstimateMetadata,
         backlog: {
           historicalRecords: input.backlog.historicalRecords.length,
           currentRecords: input.backlog.currentRecords.length,
@@ -215,6 +234,49 @@ function buildSyncPayload(input: PipelineSyncInput, frameDecodes: WhoopProprieta
   ];
 
   return { capture, packets, decodedReadings };
+}
+
+function buildSleepEstimateMetadata(localSleep: LocalSleepAnalysis): {
+  mode: 'current_ble_estimate' | 'last_trusted_estimate';
+  windowSource: LocalSleepAnalysis['windowSource'];
+  windowEvidencePoints: number;
+  windowStart: string;
+  windowEnd: string;
+  durationMinutes: number;
+  processNote: string;
+} {
+  const hasCurrentEstimate = Boolean(
+    localSleep.estimatedStartIso
+    && localSleep.estimatedEndIso
+    && localSleep.estimatedDurationMinutes !== undefined
+    && Number.isFinite(localSleep.estimatedDurationMinutes)
+    && localSleep.estimatedDurationMinutes > 0
+    && localSleep.estimatedDurationMinutes <= 14 * 60
+    && localSleep.windowEvidencePoints >= MIN_SYNC_SLEEP_EVIDENCE_POINTS
+    && localSleep.dataConfidence >= MIN_SYNC_SLEEP_CONFIDENCE,
+  );
+
+  if (!hasCurrentEstimate || !localSleep.estimatedStartIso || !localSleep.estimatedEndIso || localSleep.estimatedDurationMinutes === undefined) {
+    return {
+      mode: 'last_trusted_estimate',
+      windowSource: localSleep.windowSource,
+      windowEvidencePoints: localSleep.windowEvidencePoints,
+      windowStart: LAST_TRUSTED_SLEEP_ESTIMATE.windowStart,
+      windowEnd: LAST_TRUSTED_SLEEP_ESTIMATE.windowEnd,
+      durationMinutes: LAST_TRUSTED_SLEEP_ESTIMATE.durationMinutes,
+      processNote: LAST_TRUSTED_SLEEP_ESTIMATE.processNote,
+    };
+  }
+
+  return {
+    mode: 'current_ble_estimate',
+    windowSource: localSleep.windowSource,
+    windowEvidencePoints: localSleep.windowEvidencePoints,
+    windowStart: localSleep.estimatedStartIso,
+    windowEnd: localSleep.estimatedEndIso,
+    durationMinutes: localSleep.estimatedDurationMinutes,
+    processNote: `${localSleep.windowEvidencePoints} BLE backlog points decoded from the current capture. This estimate passed the local sleep evidence gate.`,
+  };
 }
 
 function buildPacketKey(packet: PacketRecord): string {
