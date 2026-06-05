@@ -52,8 +52,8 @@ const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
 const SLEEP_ESTIMATE_REFERENCE = {
-  date: 'Jun 3, 2026',
-  dateLong: 'Wed, Jun 3, 2026',
+  date: 'Jun 4, 2026',
+  dateLong: 'Thu, Jun 4, 2026',
   window: '1:15 AM - 7:27 AM',
   duration: '6h 12m asleep',
   durationMinutes: 372,
