@@ -51,13 +51,13 @@ const WHOOP_PROPRIETARY_SERVICE = '61080001-8d6d-82b8-614a-1c8cb0f8dcc6';
 const WHOOP_COMMAND_CHARACTERISTIC = '61080002-8d6d-82b8-614a-1c8cb0f8dcc6';
 const AUTO_SYNC_DEBOUNCE_MS = 4_500;
 const DATA_CONSENT_VERSION = 'whoop-public-beta-2026-06-04';
-const SLEEP_ESTIMATE_REFERENCE = {
+const FALLBACK_SLEEP_ESTIMATE = {
   date: 'Jun 4, 2026',
   dateLong: 'Thu, Jun 4, 2026',
   window: '1:15 AM - 7:27 AM',
   duration: '6h 12m asleep',
   durationMinutes: 372,
-  note: 'Local estimate line for the BLE sleep pipeline.',
+  note: 'Saved estimate line. A new morning capture replaces this once enough BLE sleep evidence is decoded.',
 };
 
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
@@ -1659,8 +1659,7 @@ function TodayFeedPanel({
 }) {
   const stats = report.standard.heartRateStats;
   const sleepDuration = report.sleep.estimatedDurationMinutes === undefined ? 'sleep window waiting' : `${formatDurationMinutes(report.sleep.estimatedDurationMinutes)} asleep`;
-  const sleepEstimateDuration = SLEEP_ESTIMATE_REFERENCE.duration;
-  const sleepEstimateWindow = SLEEP_ESTIMATE_REFERENCE.window;
+  const sleepEstimate = buildSleepEstimateDisplay(report);
   const sleepScore = packetCount === 0 ? 'Waiting' : `${report.sleep.localScore}/100`;
   const sleepTone = packetCount === 0 ? 'neutral' : report.sleep.dataConfidence >= 45 ? 'good' : 'warn';
   const recovery = calculateRecoveryProxy(report);
@@ -1669,11 +1668,13 @@ function TodayFeedPanel({
   const pipelineDetail = pipelineStatus?.message ?? (packetCount > 0 ? `${packetCount} packets ready for pipeline` : 'connect to collect data');
   const sleepStages = buildEstimatedSleepStages({
     ...report.sleep,
-    estimatedDurationMinutes: SLEEP_ESTIMATE_REFERENCE.durationMinutes,
+    estimatedDurationMinutes: sleepEstimate.durationMinutes,
   });
-  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages);
+  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages, sleepEstimate.durationMinutes);
   const todayDateShort = formatFeedDate(currentDate);
-  const sleepEvidence = report.sleep.windowEvidencePoints > 0
+  const sleepEvidence = sleepEstimate.isFallback
+    ? 'Waiting for new capture'
+    : report.sleep.windowEvidencePoints > 0
     ? `${report.sleep.windowEvidencePoints} trusted backlog points`
     : 'Waiting for trusted backlog points';
 
@@ -1710,19 +1711,19 @@ function TodayFeedPanel({
         <div className="sleep-feed-header">
           <div>
             <strong>Sleep Estimate</strong>
-            <em>{SLEEP_ESTIMATE_REFERENCE.dateLong}</em>
-            <span>{sleepEstimateWindow}</span>
+            <em>{sleepEstimate.dateLong}</em>
+            <span>{sleepEstimate.window}</span>
           </div>
-          <small>{report.sleep.confidenceLabel} confidence</small>
+          <small>{sleepEstimate.confidenceLabel}</small>
         </div>
         <div className="sleep-feed-summary">
           <div>
             <span>Time asleep</span>
-            <strong>{sleepEstimateDuration}</strong>
+            <strong>{sleepEstimate.duration}</strong>
           </div>
           <div>
             <span>Sleep window</span>
-            <strong>{sleepEstimateWindow}</strong>
+            <strong>{sleepEstimate.window}</strong>
           </div>
           <div>
             <span>BLE evidence</span>
@@ -1731,11 +1732,11 @@ function TodayFeedPanel({
         </div>
         <div className="sleep-validation-card">
           <div>
-            <span>Estimate line</span>
-            <strong>{SLEEP_ESTIMATE_REFERENCE.date}</strong>
+            <span>{sleepEstimate.sourceLabel}</span>
+            <strong>{sleepEstimate.date}</strong>
           </div>
           <p>
-            {SLEEP_ESTIMATE_REFERENCE.window}, {SLEEP_ESTIMATE_REFERENCE.duration}. {SLEEP_ESTIMATE_REFERENCE.note}
+            {sleepEstimate.window}, {sleepEstimate.duration}. {sleepEstimate.note}
           </p>
         </div>
         <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
@@ -2118,6 +2119,7 @@ function LocalSleepAnalysisPanel({
   analysis: LocalSleepAnalysis;
 }) {
   const scoreTone = analysis.dataConfidence >= 45 ? 'good' : 'warn';
+  const sleepEstimate = buildSleepEstimateDisplayFromSleep(analysis);
   return (
     <section className="panel sleep-panel">
       <div className="section-heading">
@@ -2164,7 +2166,7 @@ function LocalSleepAnalysisPanel({
 
       <div className="sleep-notes">
         <p>
-          Estimate line: {SLEEP_ESTIMATE_REFERENCE.date}, {SLEEP_ESTIMATE_REFERENCE.window}, {SLEEP_ESTIMATE_REFERENCE.duration}. {SLEEP_ESTIMATE_REFERENCE.note}
+          Estimate line: {sleepEstimate.date}, {sleepEstimate.window}, {sleepEstimate.duration}. {sleepEstimate.note}
         </p>
         <p>
           This sleep window is inferred automatically from BLE data. The Bluetooth capture only proves the packets this browser received, so the official sleep score still cannot be recovered from this data alone.
@@ -2350,6 +2352,18 @@ interface ExtraSleepMetric {
   subValue?: string;
 }
 
+interface SleepEstimateDisplay {
+  date: string;
+  dateLong: string;
+  window: string;
+  duration: string;
+  durationMinutes: number;
+  note: string;
+  sourceLabel: string;
+  confidenceLabel: string;
+  isFallback: boolean;
+}
+
 interface EstimatedSleepStage {
   label: string;
   value: string;
@@ -2357,8 +2371,70 @@ interface EstimatedSleepStage {
   percent: number;
 }
 
-function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSleepStage[]): ExtraSleepMetric[] {
-  const asleepMinutes = SLEEP_ESTIMATE_REFERENCE.durationMinutes;
+function buildSleepEstimateDisplay(report: HealthReport): SleepEstimateDisplay {
+  return buildSleepEstimateDisplayFromSleep(report.sleep);
+}
+
+function buildSleepEstimateDisplayFromSleep(analysis: LocalSleepAnalysis): SleepEstimateDisplay {
+  const duration = analysis.estimatedDurationMinutes;
+  const hasCapturedEstimate = Boolean(
+    analysis.estimatedStartIso
+    && analysis.estimatedEndIso
+    && duration !== undefined
+    && Number.isFinite(duration)
+    && duration > 0
+    && duration <= 14 * 60
+    && analysis.windowEvidencePoints > 0,
+  );
+
+  if (!hasCapturedEstimate || !analysis.estimatedStartIso || !analysis.estimatedEndIso || duration === undefined) {
+    return {
+      ...FALLBACK_SLEEP_ESTIMATE,
+      sourceLabel: 'Saved estimate',
+      confidenceLabel: 'waiting for new capture',
+      isFallback: true,
+    };
+  }
+
+  const evidenceLabel = `${analysis.windowEvidencePoints} BLE backlog point${analysis.windowEvidencePoints === 1 ? '' : 's'}`;
+  return {
+    date: formatSleepEstimateDate(analysis.estimatedEndIso),
+    dateLong: formatSleepEstimateDateLong(analysis.estimatedEndIso),
+    window: `${formatClockTime(analysis.estimatedStartIso)} - ${formatClockTime(analysis.estimatedEndIso)}`,
+    duration: `${formatDurationMinutes(duration)} asleep`,
+    durationMinutes: duration,
+    note: `${evidenceLabel} decoded from the latest morning capture. This replaces the saved estimate when enough sleep evidence is available.`,
+    sourceLabel: 'Morning capture',
+    confidenceLabel: `${analysis.confidenceLabel} confidence`,
+    isFallback: false,
+  };
+}
+
+function formatSleepEstimateDate(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(iso));
+}
+
+function formatSleepEstimateDateLong(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(new Date(iso));
+}
+
+function formatClockTime(iso: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(iso));
+}
+
+function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSleepStage[], asleepMinutes: number): ExtraSleepMetric[] {
   const awakeMinutes = sleepStages.find((stage) => stage.label === 'Awake')?.minutes ?? Math.round(asleepMinutes * 0.1);
   const latencyMinutes = estimateSleepLatencyMinutes(report);
   const timeInBedMinutes = asleepMinutes + awakeMinutes + latencyMinutes;
