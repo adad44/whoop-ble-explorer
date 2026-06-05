@@ -1834,7 +1834,13 @@ function SleepScorePage({
         </div>
       </div>
       <SleepEstimateCard report={report} currentDate={currentDate} />
-      <LocalSleepAnalysisPanel analysis={analysis} />
+      <details className="sleep-details-disclosure">
+        <summary>
+          <span>Decoder details</span>
+          <strong>evidence, HRV, confidence</strong>
+        </summary>
+        <LocalSleepAnalysisPanel analysis={analysis} />
+      </details>
     </section>
   );
 }
@@ -1885,32 +1891,44 @@ function SleepEstimateCard({ report, currentDate }: { report: HealthReport; curr
           {sleepEstimate.window}, {sleepEstimate.duration}. {sleepEstimate.note}
         </p>
       </div>
-      <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
-        <div className="sleep-extra-heading">
-          <strong>Local estimate metrics</strong>
-          <span>Not official WHOOP values</span>
+      <details className="sleep-details-disclosure">
+        <summary>
+          <span>More sleep metrics</span>
+          <strong>{extraSleepMetrics.length} local estimates</strong>
+        </summary>
+        <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
+          <div className="sleep-extra-heading">
+            <strong>Local estimate metrics</strong>
+            <span>Not official WHOOP values</span>
+          </div>
+          <div className="sleep-extra-grid">
+            {extraSleepMetrics.map((metric) => (
+              <div className="sleep-extra-card" key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+                {metric.subValue && <small>{metric.subValue}</small>}
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="sleep-extra-grid">
-          {extraSleepMetrics.map((metric) => (
-            <div className="sleep-extra-card" key={metric.label}>
-              <span>{metric.label}</span>
-              <strong>{metric.value}</strong>
-              {metric.subValue && <small>{metric.subValue}</small>}
+      </details>
+      <details className="sleep-details-disclosure">
+        <summary>
+          <span>Stage split</span>
+          <strong>Awake, Light, Deep, REM</strong>
+        </summary>
+        <div className="sleep-feed-stages">
+          {sleepStages.map((stage) => (
+            <div className="sleep-stage-row" key={stage.label}>
+              <div>
+                <span>{stage.label}</span>
+                <strong>{stage.value}</strong>
+              </div>
+              <meter min="0" max="100" value={stage.percent} />
             </div>
           ))}
         </div>
-      </div>
-      <div className="sleep-feed-stages">
-        {sleepStages.map((stage) => (
-          <div className="sleep-stage-row" key={stage.label}>
-            <div>
-              <span>{stage.label}</span>
-              <strong>{stage.value}</strong>
-            </div>
-            <meter min="0" max="100" value={stage.percent} />
-          </div>
-        ))}
-      </div>
+      </details>
       <p>{report.sleep.estimatedDurationMinutes === undefined ? 'Stages will appear after a morning reconnect provides enough overnight timestamps.' : 'Stage split is estimated from duration, HR stability, HRV proxy, and data confidence. It is not an official WHOOP sleep-stage decode.'}</p>
     </section>
   );
