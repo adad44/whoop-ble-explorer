@@ -912,6 +912,68 @@ h3 {
   line-height: 1.38;
 }
 
+.sleep-extra-metrics {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(12, 35, 64, 0.12);
+  border-radius: 8px;
+  padding: 11px;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.sleep-extra-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sleep-extra-heading strong {
+  color: var(--navy-950);
+  font-size: 0.94rem;
+}
+
+.sleep-extra-heading span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.sleep-extra-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 8px;
+}
+
+.sleep-extra-card {
+  min-height: 76px;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(255, 250, 240, 0.78);
+}
+
+.sleep-extra-card span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.sleep-extra-card strong {
+  color: var(--navy-950);
+  font-size: 0.98rem;
+}
+
+.sleep-extra-card small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
 .sleep-feed-stages {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

@@ -1671,6 +1671,7 @@ function TodayFeedPanel({
     ...report.sleep,
     estimatedDurationMinutes: SLEEP_ESTIMATE_REFERENCE.durationMinutes,
   });
+  const extraSleepMetrics = buildExtraSleepMetrics(report, sleepStages);
   const todayDateShort = formatFeedDate(currentDate);
   const sleepEvidence = report.sleep.windowEvidencePoints > 0
     ? `${report.sleep.windowEvidencePoints} trusted backlog points`
@@ -1736,6 +1737,21 @@ function TodayFeedPanel({
           <p>
             {SLEEP_ESTIMATE_REFERENCE.window}, {SLEEP_ESTIMATE_REFERENCE.duration}. {SLEEP_ESTIMATE_REFERENCE.note}
           </p>
+        </div>
+        <div className="sleep-extra-metrics" aria-label="Additional estimated sleep and recovery metrics">
+          <div className="sleep-extra-heading">
+            <strong>Local estimate metrics</strong>
+            <span>Not official WHOOP values</span>
+          </div>
+          <div className="sleep-extra-grid">
+            {extraSleepMetrics.map((metric) => (
+              <div className="sleep-extra-card" key={metric.label}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+                {metric.subValue && <small>{metric.subValue}</small>}
+              </div>
+            ))}
+          </div>
         </div>
         <div className="sleep-feed-stages">
           {sleepStages.map((stage) => (
@@ -2328,20 +2344,117 @@ function scoreRmssdProxy(rmssdMs: number): number {
   return clampNumber(Math.round(rmssdMs * 2), 10, 55);
 }
 
+interface ExtraSleepMetric {
+  label: string;
+  value: string;
+  subValue?: string;
+}
+
 interface EstimatedSleepStage {
   label: string;
   value: string;
+  minutes: number;
   percent: number;
+}
+
+function buildExtraSleepMetrics(report: HealthReport, sleepStages: EstimatedSleepStage[]): ExtraSleepMetric[] {
+  const asleepMinutes = SLEEP_ESTIMATE_REFERENCE.durationMinutes;
+  const awakeMinutes = sleepStages.find((stage) => stage.label === 'Awake')?.minutes ?? Math.round(asleepMinutes * 0.1);
+  const latencyMinutes = estimateSleepLatencyMinutes(report);
+  const timeInBedMinutes = asleepMinutes + awakeMinutes + latencyMinutes;
+  const sleepEfficiency = Math.round((asleepMinutes / Math.max(1, timeInBedMinutes)) * 100);
+  const sleepNeedMinutes = estimateSleepNeedMinutes(report);
+  const sleepDebtMinutes = Math.max(0, sleepNeedMinutes - asleepMinutes);
+  const restingHeartRate = report.sleep.hrStats?.min ?? report.standard.heartRateStats?.min;
+  const stressScore = calculateStressMonitorProxy(report);
+
+  return [
+    {
+      label: 'Time in bed',
+      value: formatDurationMinutes(timeInBedMinutes),
+      subValue: 'asleep + awake + latency',
+    },
+    {
+      label: 'Sleep efficiency',
+      value: `${sleepEfficiency}%`,
+      subValue: 'time asleep / in bed',
+    },
+    {
+      label: 'Sleep latency',
+      value: formatDurationMinutes(latencyMinutes),
+      subValue: 'fall-asleep estimate',
+    },
+    {
+      label: 'Sleep consistency',
+      value: `${estimateSleepConsistency(report)}%`,
+      subValue: 'window stability',
+    },
+    {
+      label: 'Sleep need',
+      value: formatDurationMinutes(sleepNeedMinutes),
+      subValue: 'local daily target',
+    },
+    {
+      label: 'Sleep debt',
+      value: sleepDebtMinutes > 0 ? formatDurationMinutes(sleepDebtMinutes) : 'None',
+      subValue: 'need minus sleep',
+    },
+    {
+      label: 'Resting HR',
+      value: restingHeartRate === undefined ? 'Waiting' : `${restingHeartRate} bpm`,
+      subValue: restingHeartRate === undefined ? 'needs overnight HR' : 'lowest sleep/local HR',
+    },
+    {
+      label: 'Stress score',
+      value: stressScore === undefined ? 'Waiting' : `${stressScore}/100`,
+      subValue: stressScore === undefined ? 'needs HR signal' : 'local HR load proxy',
+    },
+  ];
+}
+
+function estimateSleepLatencyMinutes(report: HealthReport): number {
+  const averageHr = report.sleep.hrStats?.avg ?? report.standard.heartRateStats?.avg;
+  const hrv = report.sleep.hrvProxy?.rmssdMs ?? report.standard.rmssdMs;
+  const confidenceOffset = report.sleep.dataConfidence >= 75 ? -4 : report.sleep.dataConfidence < 45 ? 6 : 0;
+  const hrOffset = averageHr === undefined ? 0 : Math.max(-3, Math.min(7, (averageHr - 62) / 4));
+  const hrvOffset = hrv === undefined ? 0 : Math.max(-4, Math.min(3, (35 - hrv) / 8));
+  return clampNumber(Math.round(16 + confidenceOffset + hrOffset + hrvOffset), 8, 35);
+}
+
+function estimateSleepConsistency(report: HealthReport): number {
+  const evidenceBonus = Math.min(16, report.sleep.windowEvidencePoints * 3);
+  const confidenceBonus = Math.round(report.sleep.dataConfidence * 0.14);
+  const hrvPenalty = report.sleep.hrvProxy || report.standard.rmssdMs ? 0 : 5;
+  return clampNumber(68 + evidenceBonus + confidenceBonus - hrvPenalty, 60, 94);
+}
+
+function estimateSleepNeedMinutes(report: HealthReport): number {
+  const recovery = calculateRecoveryProxy(report);
+  const strain = calculateTextStrain(report);
+  const recoveryAdjustment = recovery === undefined ? 0 : recovery < 55 ? 20 : recovery >= 75 ? -10 : 0;
+  const strainAdjustment = strain === undefined ? 0 : strain >= 12 ? 18 : strain >= 8 ? 10 : 0;
+  return clampNumber(480 + recoveryAdjustment + strainAdjustment, 450, 540);
+}
+
+function calculateStressMonitorProxy(report: HealthReport): number | undefined {
+  const stats = report.standard.heartRateStats;
+  if (!stats) {
+    return undefined;
+  }
+  const rmssd = report.sleep.hrvProxy?.rmssdMs ?? report.standard.rmssdMs;
+  const hrLoad = Math.max(0, stats.avg - 58) * 1.4 + Math.max(0, stats.max - 95) * 0.45;
+  const hrvRelief = rmssd === undefined ? 0 : Math.max(-10, Math.min(18, (rmssd - 30) * 0.45));
+  return clampNumber(Math.round(42 + hrLoad - hrvRelief), 5, 100);
 }
 
 function buildEstimatedSleepStages(analysis: LocalSleepAnalysis): EstimatedSleepStage[] {
   const duration = analysis.estimatedDurationMinutes;
   if (duration === undefined || !Number.isFinite(duration) || duration <= 0 || duration > 14 * 60) {
     return [
-      { label: 'Awake', value: 'Waiting', percent: 0 },
-      { label: 'Light', value: 'Waiting', percent: 0 },
-      { label: 'Deep', value: 'Waiting', percent: 0 },
-      { label: 'REM', value: 'Waiting', percent: 0 },
+      { label: 'Awake', value: 'Waiting', minutes: 0, percent: 0 },
+      { label: 'Light', value: 'Waiting', minutes: 0, percent: 0 },
+      { label: 'Deep', value: 'Waiting', minutes: 0, percent: 0 },
+      { label: 'REM', value: 'Waiting', minutes: 0, percent: 0 },
     ];
   }
 
@@ -2369,6 +2482,7 @@ function makeSleepStage(label: string, percent: number, durationMinutes: number)
   return {
     label,
     value: formatDurationMinutes(minutes),
+    minutes,
     percent: Math.round(percent),
   };
 }
