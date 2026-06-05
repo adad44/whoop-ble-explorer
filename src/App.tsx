@@ -66,13 +66,14 @@ const FALLBACK_SLEEP_ESTIMATE = {
 type AutoSyncStage = 'idle' | 'connecting' | 'subscribing' | 'capturing' | 'processing' | 'sending' | 'synced' | 'error';
 type StepState = 'done' | 'active' | 'waiting' | 'error';
 type WorkspacePage = 'today' | 'sleep' | 'recovery' | 'strain' | 'live';
+type MotionIconName = 'today' | 'sleep' | 'recovery' | 'strain' | 'live' | 'heart' | 'battery' | 'data' | 'sync' | 'clock' | 'neutral';
 
-const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string }> = [
-  { id: 'today', label: 'Today', detail: 'feed' },
-  { id: 'sleep', label: 'Sleep', detail: 'score' },
-  { id: 'recovery', label: 'Recovery', detail: 'readiness' },
-  { id: 'strain', label: 'Strain', detail: 'load' },
-  { id: 'live', label: 'Live', detail: 'connect' },
+const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string; icon: MotionIconName }> = [
+  { id: 'today', label: 'Today', detail: 'feed', icon: 'today' },
+  { id: 'sleep', label: 'Sleep', detail: 'score', icon: 'sleep' },
+  { id: 'recovery', label: 'Recovery', detail: 'readiness', icon: 'recovery' },
+  { id: 'strain', label: 'Strain', detail: 'load', icon: 'strain' },
+  { id: 'live', label: 'Live', detail: 'connect', icon: 'live' },
 ];
 
 interface LiveSyncStep {
@@ -1139,8 +1140,11 @@ function CaptureApp() {
             key={page.id}
             onClick={() => setActiveWorkspacePage(page.id)}
           >
-            <span>{page.label}</span>
-            <small>{page.detail}</small>
+            <MotionIcon name={page.icon} />
+            <span className="workspace-tab-text">
+              <span>{page.label}</span>
+              <small>{page.detail}</small>
+            </span>
           </button>
         ))}
       </nav>
@@ -1718,25 +1722,51 @@ function Metric({ label, value, subValue }: { label: string; value: string; subV
   );
 }
 
+function MotionIcon({ name, size = 'regular' }: { name: MotionIconName; size?: 'regular' | 'compact' }) {
+  return (
+    <span className={`motion-icon motion-icon-${name} ${size === 'compact' ? 'compact' : ''}`} aria-hidden="true">
+      <i />
+    </span>
+  );
+}
+
+function metricIconForLabel(label: string): MotionIconName {
+  const normalized = label.toLowerCase();
+  if (normalized.includes('sleep') || normalized.includes('hrv') || normalized.includes('rr')) return 'sleep';
+  if (normalized.includes('recovery') || normalized.includes('resting')) return 'recovery';
+  if (normalized.includes('strain') || normalized.includes('stress') || normalized.includes('max')) return 'strain';
+  if (normalized.includes('heart') || normalized.includes('hr') || normalized.includes('bpm')) return 'heart';
+  if (normalized.includes('battery')) return 'battery';
+  if (normalized.includes('captured') || normalized.includes('data') || normalized.includes('backlog') || normalized.includes('frames')) return 'data';
+  if (normalized.includes('pipeline') || normalized.includes('sync') || normalized.includes('decode') || normalized.includes('source')) return 'sync';
+  if (normalized.includes('date') || normalized.includes('window')) return 'clock';
+  return 'neutral';
+}
+
 function Signal({
   label,
   value,
   subValue,
   tone = 'neutral',
   statusLight,
+  icon,
 }: {
   label: string;
   value: string;
   subValue?: string;
   tone?: 'good' | 'warn' | 'neutral';
   statusLight?: 'live' | 'offline';
+  icon?: MotionIconName;
 }) {
   return (
     <article className={`signal ${tone}`}>
-      <span className="signal-label">
-        {label}
-        {statusLight && <i className={`status-light ${statusLight}`} aria-label={statusLight === 'live' ? 'Live' : 'Waiting'} />}
-      </span>
+      <div className="signal-heading">
+        <MotionIcon name={icon ?? metricIconForLabel(label)} size="compact" />
+        <span className="signal-label">
+          {label}
+          {statusLight && <i className={`status-light ${statusLight}`} aria-label={statusLight === 'live' ? 'Live' : 'Waiting'} />}
+        </span>
+      </div>
       <strong>{value}</strong>
       {subValue && <small>{subValue}</small>}
     </article>

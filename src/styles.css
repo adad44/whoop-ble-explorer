@@ -146,7 +146,8 @@ code {
   min-height: 52px;
   display: grid;
   align-content: center;
-  gap: 2px;
+  justify-items: center;
+  gap: 4px;
   padding: 8px 10px;
   background: rgba(255, 250, 240, 0.84);
   text-align: center;
@@ -158,12 +159,23 @@ code {
   color: var(--cream-50);
 }
 
-.workspace-tabs button span {
+.workspace-tabs button.active .motion-icon {
+  border-color: rgba(255, 250, 240, 0.22);
+  background: rgba(255, 250, 240, 0.16);
+  color: var(--cream-50);
+}
+
+.workspace-tab-text {
+  display: grid;
+  gap: 2px;
+}
+
+.workspace-tab-text > span {
   font-size: 0.88rem;
   line-height: 1.1;
 }
 
-.workspace-tabs button small {
+.workspace-tab-text small {
   color: inherit;
   font-size: 0.68rem;
   font-weight: 750;
@@ -197,12 +209,30 @@ code {
 }
 
 .page-hero-metric {
+  position: relative;
   display: grid;
   gap: 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 18px;
   background: rgba(255, 250, 240, 0.82);
+  overflow: hidden;
+}
+
+.page-hero-metric::after {
+  content: "";
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 50% 50%, currentColor 0 24%, transparent 25%),
+    conic-gradient(from 120deg, currentColor 0 78deg, transparent 80deg 360deg);
+  color: rgba(15, 118, 110, 0.52);
+  opacity: 0.72;
+  animation: heroMetricArrive 520ms ease-out both;
 }
 
 .page-hero-metric.good {
@@ -213,6 +243,10 @@ code {
 .page-hero-metric.warn {
   border-color: #ebcd7e;
   background: var(--amber-soft);
+}
+
+.page-hero-metric.warn::after {
+  color: rgba(183, 121, 31, 0.58);
 }
 
 .page-hero-metric span {
@@ -306,11 +340,25 @@ h3 {
   border-color: #efb2a7;
 }
 
+.connection-pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.78;
+}
+
 .connection-pill.is-connected,
 .health-chip.good {
   background: var(--teal-soft);
   color: var(--teal);
   border-color: #b9ddd3;
+}
+
+.connection-pill.is-connected::before {
+  animation: statusBreathe 1.9s ease-in-out infinite;
 }
 
 .health-chip.warn {
@@ -560,6 +608,7 @@ h3 {
 .live-status.live > div::before {
   background: var(--teal);
   box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.16), 0 0 18px rgba(15, 118, 110, 0.25);
+  animation: liveDotPulse 1.8s ease-out infinite;
 }
 
 .live-status.quiet {
@@ -725,6 +774,7 @@ h3 {
 .live-sync-step.active > span {
   background: var(--amber);
   box-shadow: 0 0 0 5px rgba(183, 121, 31, 0.14);
+  animation: liveDotPulse 1.6s ease-out infinite;
 }
 
 .live-sync-step.error {
@@ -783,6 +833,7 @@ h3 {
 }
 
 .today-feed-panel > summary {
+  position: relative;
   min-height: 52px;
   display: flex;
   align-items: center;
@@ -792,6 +843,23 @@ h3 {
   cursor: pointer;
   color: var(--navy-950);
   font-weight: 900;
+}
+
+.today-feed-panel > summary::after {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  opacity: 0.55;
+  transform: rotate(45deg);
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.today-feed-panel[open] > summary::after {
+  opacity: 0.86;
+  transform: translateY(2px) rotate(225deg);
 }
 
 .today-feed-panel > summary span {
@@ -1315,11 +1383,19 @@ h3 {
   font-weight: 750;
 }
 
+.signal-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .signal .signal-label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .status-light {
@@ -1332,11 +1408,205 @@ h3 {
 .status-light.live {
   background: var(--teal);
   box-shadow: 0 0 0 4px rgba(45, 125, 99, 0.14);
+  animation: statusBreathe 1.9s ease-in-out infinite;
 }
 
 .status-light.offline {
   background: var(--red);
   box-shadow: 0 0 0 4px rgba(180, 35, 24, 0.12);
+}
+
+.motion-icon {
+  position: relative;
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(12, 35, 64, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 250, 240, 0.92);
+  color: var(--navy-900);
+  overflow: hidden;
+}
+
+.motion-icon.compact {
+  width: 22px;
+  height: 22px;
+}
+
+.motion-icon::before,
+.motion-icon::after,
+.motion-icon i {
+  content: "";
+  position: absolute;
+  display: block;
+}
+
+.motion-icon-today::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--amber);
+  box-shadow: 0 0 0 4px rgba(183, 121, 31, 0.12);
+}
+
+.motion-icon-today::after {
+  width: 18px;
+  height: 18px;
+  border: 2px dashed rgba(183, 121, 31, 0.52);
+  border-radius: 999px;
+  animation: iconSpin 7s linear infinite;
+}
+
+.motion-icon-sleep::before {
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background: var(--navy-900);
+  transform: translateX(-2px);
+}
+
+.motion-icon-sleep::after {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 250, 240, 0.96);
+  transform: translate(3px, -2px);
+}
+
+.motion-icon-sleep i {
+  width: 3px;
+  height: 3px;
+  right: 5px;
+  bottom: 6px;
+  border-radius: 999px;
+  background: var(--amber);
+  animation: iconFloat 2.4s ease-in-out infinite;
+}
+
+.motion-icon-recovery::before {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(45, 125, 99, 0.45);
+  border-radius: 999px;
+}
+
+.motion-icon-recovery i {
+  width: 11px;
+  height: 5px;
+  border-left: 2px solid var(--teal);
+  border-bottom: 2px solid var(--teal);
+  transform: rotate(-45deg) translateY(-1px);
+  animation: iconCheck 2.2s ease-in-out infinite;
+}
+
+.motion-icon-strain i {
+  width: 3px;
+  height: 12px;
+  bottom: 5px;
+  left: 7px;
+  border-radius: 999px;
+  background: var(--red);
+  box-shadow: 5px 3px 0 rgba(180, 35, 24, 0.72), 10px -4px 0 rgba(183, 121, 31, 0.82);
+  animation: iconBars 1.8s ease-in-out infinite;
+}
+
+.motion-icon-live::before {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--teal);
+}
+
+.motion-icon-live::after {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(45, 125, 99, 0.42);
+  border-radius: 999px;
+  animation: iconPulseRing 1.8s ease-out infinite;
+}
+
+.motion-icon-heart i {
+  width: 15px;
+  height: 8px;
+  border-left: 2px solid var(--red);
+  border-bottom: 2px solid var(--red);
+  transform: skewX(-18deg) rotate(-18deg);
+  animation: iconBeat 1.6s ease-in-out infinite;
+}
+
+.motion-icon-battery::before {
+  width: 13px;
+  height: 8px;
+  border: 2px solid var(--teal);
+  border-radius: 3px;
+}
+
+.motion-icon-battery::after {
+  right: 4px;
+  width: 2px;
+  height: 6px;
+  border-radius: 0 3px 3px 0;
+  background: var(--teal);
+}
+
+.motion-icon-battery i {
+  left: 6px;
+  width: 7px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(45, 125, 99, 0.72);
+  animation: iconCharge 2.4s ease-in-out infinite;
+}
+
+.motion-icon-data i {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--navy-900);
+  box-shadow: 7px 0 0 rgba(12, 35, 64, 0.72), -7px 0 0 rgba(12, 35, 64, 0.42), 0 7px 0 rgba(45, 125, 99, 0.68);
+  animation: iconFloat 2.2s ease-in-out infinite;
+}
+
+.motion-icon-sync::before {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(15, 118, 110, 0.5);
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: iconSpin 2.8s linear infinite;
+}
+
+.motion-icon-sync i {
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--teal);
+}
+
+.motion-icon-clock::before {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(12, 35, 64, 0.55);
+  border-radius: 999px;
+}
+
+.motion-icon-clock i {
+  width: 2px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--navy-900);
+  transform-origin: 50% 100%;
+  animation: iconTick 4s steps(8) infinite;
+}
+
+.motion-icon-neutral::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: rgba(12, 35, 64, 0.62);
+  transform: rotate(45deg);
 }
 
 .metric strong,
@@ -2047,6 +2317,129 @@ textarea {
   text-align: center;
 }
 
+@keyframes statusBreathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.78;
+  }
+  50% {
+    transform: scale(1.22);
+    opacity: 1;
+  }
+}
+
+@keyframes liveDotPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.82;
+  }
+  50% {
+    transform: scale(1.24);
+    opacity: 1;
+  }
+}
+
+@keyframes iconSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes iconFloat {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes iconCheck {
+  0%,
+  100% {
+    opacity: 0.78;
+    transform: rotate(-45deg) translateY(-1px) scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: rotate(-45deg) translateY(-1px) scale(1.08);
+  }
+}
+
+@keyframes iconBars {
+  0%,
+  100% {
+    transform: scaleY(0.86);
+  }
+  50% {
+    transform: scaleY(1.05);
+  }
+}
+
+@keyframes iconPulseRing {
+  0% {
+    opacity: 0.82;
+    transform: scale(0.74);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+}
+
+@keyframes iconBeat {
+  0%,
+  100% {
+    transform: skewX(-18deg) rotate(-18deg) scale(1);
+  }
+  45% {
+    transform: skewX(-18deg) rotate(-18deg) scale(1.12);
+  }
+}
+
+@keyframes iconCharge {
+  0%,
+  100% {
+    transform: scaleX(0.45);
+    transform-origin: left center;
+  }
+  50% {
+    transform: scaleX(1);
+    transform-origin: left center;
+  }
+}
+
+@keyframes iconTick {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes heroMetricArrive {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.9);
+  }
+  to {
+    opacity: 0.72;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
 @media (max-width: 980px) {
   .dashboard-grid,
   .morning-summary-grid,
@@ -2144,7 +2537,7 @@ textarea {
     min-height: 42px;
   }
 
-  .workspace-tabs button small {
+  .workspace-tab-text small {
     display: none;
   }
 
