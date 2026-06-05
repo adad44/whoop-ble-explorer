@@ -2082,6 +2082,7 @@ function StrainPage({
   const stressScore = calculateStressMonitorProxy(report);
   const strainTone = strain === undefined ? 'neutral' : strain >= 10 ? 'warn' : 'good';
   const heartRateReadings = report.standard.heartRateReadings;
+  const strainModel = buildStrainLoadModel(heartRateReadings);
 
   return (
     <section className="metric-page">
@@ -2089,19 +2090,19 @@ function StrainPage({
         <div>
           <p className="eyebrow">Strain</p>
           <h2>Heart Load Estimate</h2>
-          <p>Local strain is estimated from heart-rate load and packet volume captured in the browser.</p>
+          <p>Local strain is estimated from sustained heart-rate load across captured same-day windows.</p>
         </div>
       </div>
       <article className={`page-hero-metric ${strainTone}`}>
         <span>Strain</span>
         <strong>{strain === undefined ? 'Waiting' : `${strain}/21`}</strong>
-        <small>{strain === undefined ? 'Needs heart-rate data' : 'Local HR load proxy'}</small>
+        <small>{strain === undefined ? 'Needs heart-rate data' : 'Sustained HR load proxy'}</small>
       </article>
       <div className="page-metric-grid">
         <Signal label="Live HR" value={latestHeartRate ? `${latestHeartRate.bpm} bpm` : 'Waiting'} subValue="current capture" tone={latestHeartRate ? 'good' : 'neutral'} />
         <Signal label="Average HR" value={stats ? `${stats.avg} bpm` : 'Waiting'} subValue={stats ? `${stats.samples} samples` : 'needs HR data'} tone={stats ? 'good' : 'neutral'} />
-        <Signal label="Max HR" value={stats ? `${stats.max} bpm` : 'Waiting'} subValue={stats ? `${stats.min} min` : 'needs HR data'} tone={stats ? 'good' : 'neutral'} />
-        <Signal label="Stress monitor" value={stressScore === undefined ? 'Waiting' : `${stressScore}/100`} subValue="local HR load proxy" tone={stressScore === undefined ? 'neutral' : stressScore > 70 ? 'warn' : 'good'} />
+        <Signal label="Sustained peak" value={strainModel ? `${strainModel.peak.score.toFixed(1)}/21` : 'Waiting'} subValue={strainModel ? `${formatGraphTimeRange(strainModel.peak)} avg ${strainModel.peak.avgBpm} bpm` : 'needs same-day HR windows'} tone={strainModel ? 'good' : 'neutral'} />
+        <Signal label="Stress monitor" value={stressScore === undefined ? 'Waiting' : `${stressScore}/100`} subValue="sustained HR load proxy" tone={stressScore === undefined ? 'neutral' : stressScore > 70 ? 'warn' : 'good'} />
         <Signal label="RR / HRV" value={report.standard.rmssdMs === undefined ? 'Waiting' : `${report.standard.rmssdMs} ms`} subValue={`${report.standard.rrIntervals} RR intervals`} tone={report.standard.rmssdMs === undefined ? 'neutral' : 'good'} />
         <Signal label="Captured" value={String(packetCount)} subValue="local packets stored" tone={packetCount > 0 ? 'good' : 'neutral'} />
       </div>
@@ -2721,15 +2722,7 @@ function formatDurationMinutes(minutes: number): string {
 }
 
 function calculateTextStrain(report: HealthReport): number | undefined {
-  const stats = report.standard.heartRateStats;
-  if (!stats) {
-    return undefined;
-  }
-  const elevatedAvg = Math.max(0, stats.avg - 60);
-  const elevatedMax = Math.max(0, stats.max - 90);
-  const packetFactor = Math.min(4, report.standard.heartRateReadings.length / 30);
-  const strain = 1 + elevatedAvg / 7 + elevatedMax / 12 + packetFactor;
-  return Math.round(Math.max(0, Math.min(21, strain)) * 10) / 10;
+  return buildStrainLoadModel(report.standard.heartRateReadings)?.dailyScore;
 }
 
 function calculateRecoveryProxy(report: HealthReport): number | undefined {
@@ -2961,12 +2954,12 @@ function getCurrentWeekDayCount(currentDate: Date): number {
 }
 
 function calculateStressMonitorProxy(report: HealthReport): number | undefined {
-  const stats = report.standard.heartRateStats;
-  if (!stats) {
+  const strainModel = buildStrainLoadModel(report.standard.heartRateReadings);
+  if (!strainModel) {
     return undefined;
   }
   const rmssd = report.sleep.hrvProxy?.rmssdMs ?? report.standard.rmssdMs;
-  const hrLoad = Math.max(0, stats.avg - 58) * 1.4 + Math.max(0, stats.max - 95) * 0.45;
+  const hrLoad = strainModel.dailyScore * 4.2 + Math.max(0, strainModel.peak.score - 5) * 2.1;
   const hrvRelief = rmssd === undefined ? 0 : Math.max(-10, Math.min(18, (rmssd - 30) * 0.45));
   return clampNumber(Math.round(42 + hrLoad - hrvRelief), 5, 100);
 }
@@ -3137,44 +3130,61 @@ function HeartRateGraph({ readings }: { readings: HeartRateReading[] }) {
   );
 }
 
+const STRAIN_BUCKET_MS = 15 * 60_000;
+
+interface TimedHeartRateReading extends HeartRateReading {
+  timeMs: number;
+}
+
+interface StrainLoadSegment {
+  timestamp: string;
+  startIso: string;
+  endIso: string;
+  startMs: number;
+  endMs: number;
+  avgBpm: number;
+  medianBpm: number;
+  peakBpm: number;
+  samples: number;
+  score: number;
+}
+
+interface StrainLoadModel {
+  sampleCount: number;
+  windowCount: number;
+  firstIso: string;
+  lastIso: string;
+  restingFloor: number;
+  dailyScore: number;
+  confidenceLabel: string;
+  segments: StrainLoadSegment[];
+  peak: StrainLoadSegment;
+  low: StrainLoadSegment;
+}
+
 function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
   const width = 360;
   const height = 150;
   const chartPadding = 14;
-  const validReadings = readings
-    .map((reading) => ({ ...reading, timeMs: new Date(reading.timestamp).getTime() }))
-    .filter((reading) => Number.isFinite(reading.timeMs) && Number.isFinite(reading.bpm) && reading.bpm > 0)
-    .sort((a, b) => a.timeMs - b.timeMs);
+  const model = buildStrainLoadModel(readings);
 
-  if (!validReadings.length) {
+  if (!model) {
     return (
       <section className="strain-trend-card">
         <div className="strain-trend-heading">
           <div>
-            <p className="eyebrow">Daily strain curve</p>
-            <h3>Peaks and lows</h3>
+            <p className="eyebrow">Observed strain curve</p>
+            <h3>Sustained peaks and lows</h3>
           </div>
         </div>
-        <EmptyState text="No heart-rate readings yet. Connect and capture to build the daily strain curve." />
+        <EmptyState text="No heart-rate readings yet. Connect and capture to build the observed strain curve." />
       </section>
     );
   }
 
-  const latestDay = startOfLocalDay(new Date(validReadings[validReadings.length - 1].timestamp)).getTime();
-  const dailyReadings = validReadings.filter((reading) => {
-    const day = startOfLocalDay(new Date(reading.timestamp)).getTime();
-    return day === latestDay;
-  });
-  const dayReadings = dailyReadings.length ? dailyReadings : validReadings.slice(-120);
-  const restingFloor = Math.max(45, Math.min(...dayReadings.map((reading) => reading.bpm)) - 3);
-  const strainPoints = dayReadings.map((reading) => ({
-    timestamp: reading.timestamp,
-    timeMs: reading.timeMs,
-    bpm: reading.bpm,
-    score: calculateReadingStrainLoad(reading.bpm, restingFloor),
-  }));
-  const firstTime = strainPoints[0].timeMs;
-  const lastTime = strainPoints[strainPoints.length - 1].timeMs;
+  const strainPoints = model.segments;
+  const firstTime = strainPoints[0].startMs;
+  const lastTime = strainPoints[strainPoints.length - 1].endMs;
   const timeRange = Math.max(1, lastTime - firstTime);
   const minScore = Math.max(0, Math.min(...strainPoints.map((point) => point.score)) - 0.4);
   const maxScore = Math.min(21, Math.max(...strainPoints.map((point) => point.score)) + 0.4);
@@ -3183,26 +3193,26 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
   const plotHeight = height - chartPadding * 2;
   const pointPositions = strainPoints.map((point) => ({
     ...point,
-    x: chartPadding + ((point.timeMs - firstTime) / timeRange) * plotWidth,
+    x: chartPadding + (((point.startMs + point.endMs) / 2 - firstTime) / timeRange) * plotWidth,
     y: chartPadding + plotHeight - ((point.score - minScore) / scoreRange) * plotHeight,
   }));
-  const peak = pointPositions.reduce((best, point) => (point.score > best.score ? point : best), pointPositions[0]);
-  const low = pointPositions.reduce((best, point) => (point.score < best.score ? point : best), pointPositions[0]);
+  const peak = pointPositions.find((point) => point.startMs === model.peak.startMs) ?? pointPositions[0];
+  const low = pointPositions.find((point) => point.startMs === model.low.startMs) ?? pointPositions[0];
   const polyline = pointPositions.map((point) => `${point.x},${point.y}`).join(' ');
-  const captureSpan = `${formatGraphTime(strainPoints[0].timestamp)} - ${formatGraphTime(strainPoints[strainPoints.length - 1].timestamp)}`;
+  const captureSpan = `${formatGraphTime(model.firstIso)} - ${formatGraphTime(model.lastIso)}`;
 
   return (
     <section className="strain-trend-card">
       <div className="strain-trend-heading">
         <div>
-          <p className="eyebrow">Daily strain curve</p>
-          <h3>Peaks and lows</h3>
+          <p className="eyebrow">Observed strain curve</p>
+          <h3>Sustained peaks and lows</h3>
           <span>{captureSpan}</span>
         </div>
-        <small>{strainPoints.length} HR samples</small>
+        <small>{model.confidenceLabel}</small>
       </div>
       <div className="strain-graph-wrap">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Estimated strain peaks and lows through the day">
+        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Estimated sustained strain peaks and lows from captured heart-rate windows">
           <line x1={chartPadding} y1={height - chartPadding} x2={width - chartPadding} y2={height - chartPadding} />
           <line x1={chartPadding} y1={chartPadding} x2={chartPadding} y2={height - chartPadding} />
           {polyline && <polyline className="strain-line" points={polyline} />}
@@ -3214,25 +3224,138 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
       </div>
       <div className="strain-point-summary">
         <div>
-          <span>Peak strain</span>
+          <span>Sustained peak</span>
           <strong>{peak.score.toFixed(1)}/21</strong>
-          <small>{formatGraphTime(peak.timestamp)} at {peak.bpm} bpm</small>
+          <small>{formatGraphTimeRange(peak)} avg {peak.avgBpm} bpm, {peak.samples} samples</small>
         </div>
         <div>
-          <span>Lowest strain</span>
+          <span>Lowest observed</span>
           <strong>{low.score.toFixed(1)}/21</strong>
-          <small>{formatGraphTime(low.timestamp)} at {low.bpm} bpm</small>
+          <small>{formatGraphTimeRange(low)} avg {low.avgBpm} bpm, {low.samples} samples</small>
         </div>
       </div>
+      <p className="strain-trend-note">Peaks use 15-minute captured HR windows, so one late spike will not outweigh sustained activity. This is observed Bluefy capture data, not a full-day WHOOP strain score.</p>
     </section>
   );
 }
 
-function calculateReadingStrainLoad(bpm: number, restingFloor: number): number {
-  const elevatedFromRestingFloor = Math.max(0, bpm - restingFloor);
-  const highHrLoad = Math.max(0, bpm - 95);
-  const score = 1 + elevatedFromRestingFloor / 6 + highHrLoad / 10;
+function buildStrainLoadModel(readings: HeartRateReading[]): StrainLoadModel | undefined {
+  const validReadings = readings
+    .map((reading) => ({ ...reading, timeMs: new Date(reading.timestamp).getTime() }))
+    .filter((reading): reading is TimedHeartRateReading =>
+      Number.isFinite(reading.timeMs)
+      && Number.isFinite(reading.bpm)
+      && reading.bpm >= 35
+      && reading.bpm <= 220,
+    )
+    .sort((a, b) => a.timeMs - b.timeMs);
+
+  if (!validReadings.length) {
+    return undefined;
+  }
+
+  const latestDay = startOfLocalDay(new Date(validReadings[validReadings.length - 1].timestamp)).getTime();
+  const dailyReadings = validReadings.filter((reading) => startOfLocalDay(new Date(reading.timestamp)).getTime() === latestDay);
+  const dayReadings = dailyReadings.length ? dailyReadings : validReadings.slice(-120);
+  const bpmValues = dayReadings.map((reading) => reading.bpm);
+  const restingFloor = clampNumber(Math.round(percentileNumber(bpmValues, 0.15) - 2), 45, 85);
+  const bucketedReadings = new Map<number, TimedHeartRateReading[]>();
+
+  for (const reading of dayReadings) {
+    const bucketStart = Math.floor(reading.timeMs / STRAIN_BUCKET_MS) * STRAIN_BUCKET_MS;
+    const existing = bucketedReadings.get(bucketStart) ?? [];
+    existing.push(reading);
+    bucketedReadings.set(bucketStart, existing);
+  }
+
+  const segments = Array.from(bucketedReadings.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([bucketStart, bucketReadings]) => {
+      const values = bucketReadings.map((reading) => reading.bpm).sort((a, b) => a - b);
+      const avgBpm = roundNumber(meanNumber(values), 1);
+      const medianBpm = roundNumber(medianNumber(values), 1);
+      const peakBpm = Math.max(...values);
+      const loadBpm = avgBpm * 0.7 + medianBpm * 0.3;
+      const sampleWeight = values.length >= 6 ? 1 : values.length >= 3 ? 0.84 : 0.58;
+      const score = roundNumber(calculateReadingStrainLoad(loadBpm, restingFloor, peakBpm) * sampleWeight, 1);
+      return {
+        timestamp: new Date(bucketStart).toISOString(),
+        startIso: new Date(bucketStart).toISOString(),
+        endIso: new Date(bucketStart + STRAIN_BUCKET_MS).toISOString(),
+        startMs: bucketStart,
+        endMs: bucketStart + STRAIN_BUCKET_MS,
+        avgBpm,
+        medianBpm,
+        peakBpm,
+        samples: values.length,
+        score,
+      };
+    });
+
+  if (!segments.length) {
+    return undefined;
+  }
+
+  const sortedByScore = [...segments].sort((a, b) => b.score - a.score);
+  const topSegments = sortedByScore.slice(0, Math.min(3, sortedByScore.length));
+  const activeMinutes = segments.filter((segment) => segment.score >= 4).length * 15;
+  const avgScore = meanNumber(segments.map((segment) => segment.score));
+  const topScore = meanNumber(topSegments.map((segment) => segment.score));
+  const coverageBonus = Math.min(1.4, Math.sqrt(dayReadings.length) / 8);
+  const dailyScore = roundNumber(clampNumber(1 + avgScore * 0.45 + topScore * 0.72 + Math.min(3.5, activeMinutes / 45) + coverageBonus, 0, 21), 1);
+  const confidenceLabel = dayReadings.length < 12 || segments.length < 3
+    ? `${segments.length} windows, limited capture`
+    : `${segments.length} windows, ${dayReadings.length} HR samples`;
+
+  return {
+    sampleCount: dayReadings.length,
+    windowCount: segments.length,
+    firstIso: dayReadings[0].timestamp,
+    lastIso: dayReadings[dayReadings.length - 1].timestamp,
+    restingFloor,
+    dailyScore,
+    confidenceLabel,
+    segments,
+    peak: sortedByScore[0],
+    low: [...segments].sort((a, b) => a.score - b.score)[0],
+  };
+}
+
+function calculateReadingStrainLoad(loadBpm: number, restingFloor: number, peakBpm = loadBpm): number {
+  const elevatedFromRestingFloor = Math.max(0, loadBpm - restingFloor);
+  const sustainedHighLoad = Math.max(0, loadBpm - 95);
+  const peakPressure = Math.max(0, peakBpm - 115) / 24;
+  const score = 1 + elevatedFromRestingFloor / 7.5 + sustainedHighLoad / 8 + peakPressure;
   return Math.round(clampNumber(score, 0, 21) * 10) / 10;
+}
+
+function meanNumber(values: number[]): number {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
+}
+
+function medianNumber(sortedValues: number[]): number {
+  if (!sortedValues.length) {
+    return 0;
+  }
+  const middle = Math.floor(sortedValues.length / 2);
+  if (sortedValues.length % 2) {
+    return sortedValues[middle];
+  }
+  return (sortedValues[middle - 1] + sortedValues[middle]) / 2;
+}
+
+function percentileNumber(values: number[], percentile: number): number {
+  if (!values.length) {
+    return 0;
+  }
+  const sortedValues = [...values].sort((a, b) => a - b);
+  const index = Math.min(sortedValues.length - 1, Math.max(0, Math.floor((sortedValues.length - 1) * percentile)));
+  return sortedValues[index];
+}
+
+function roundNumber(value: number, digits = 0): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
 }
 
 function formatGraphTime(iso: string): string {
@@ -3240,6 +3363,10 @@ function formatGraphTime(iso: string): string {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(iso));
+}
+
+function formatGraphTimeRange(segment: { startIso: string; endIso: string }): string {
+  return `${formatGraphTime(segment.startIso)}-${formatGraphTime(segment.endIso)}`;
 }
 
 function errorMessage(error: unknown): string {

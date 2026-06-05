@@ -2450,6 +2450,12 @@ textarea {
   font-size: 1.12rem;
 }
 
+.strain-trend-note {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
 .empty-state {
   display: flex;
   align-items: center;
