@@ -1677,6 +1677,24 @@ function SignInScreen() {
           </p>
         </div>
 
+        <aside className="bluefy-setup" aria-label="Bluefy setup requirement">
+          <div className="bluefy-setup-icon" aria-hidden="true">
+            <i />
+          </div>
+          <div>
+            <strong>Using an iPhone? Install Bluefy first</strong>
+            <p>This website needs a Web Bluetooth browser to connect directly to your WHOOP. Download Bluefy, then open this website inside Bluefy to sign in or create your account.</p>
+          </div>
+          <a
+            className="bluefy-download"
+            href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Download Bluefy
+          </a>
+        </aside>
+
         <form className="auth-form" onSubmit={handleSubmit}>
           <label>
             Email
