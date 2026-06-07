@@ -1,23 +1,22 @@
 # WHOOP BLE Health Pipeline - Project Context
 
-Last updated: June 4, 2026
+Last updated: June 7, 2026
 
 ## What This Project Is
 
-This is a signed-in WHOOP Bluetooth capture and health-analysis web app built for Bluefy on iPhone.
+This is a Bluefy-first WHOOP Bluetooth capture and health-analysis web app with app-specific accounts and signed-in Convex storage.
 
 The main idea is:
 
 1. Wear WHOOP normally.
 2. Open the Netlify page in Bluefy.
-3. Sign in or create an account.
-4. Accept the cloud sync disclosure.
-5. Connect to the band.
-6. The page captures whatever BLE data WHOOP sends while connected.
-7. The app decodes standard Bluetooth data immediately: heart rate, RR intervals when present, and battery.
-8. The app stores raw packets and decoded fields locally in IndexedDB.
-9. New connected-session packets are automatically uploaded to Convex under the authenticated user.
-10. Over time, the backend can become the source for a custom local health pipeline.
+3. Create an account for this app. This is not a WHOOP account.
+4. Press **Enable & Connect WHOOP** and select the band.
+5. The page captures whatever BLE data WHOOP sends while connected.
+6. The app decodes standard Bluetooth data immediately: heart rate, RR intervals when present, and battery.
+7. Raw packets and decoded fields are stored locally in IndexedDB.
+8. Signed-in captures and local analysis are automatically uploaded to Convex.
+9. Over time, the backend can become the source for a custom health pipeline and history.
 
 This does not use the WHOOP API, WHOOP cloud, WHOOP credentials, or any official WHOOP score endpoint.
 
@@ -42,6 +41,8 @@ convex/http.ts          Convex Auth HTTP routes
 convex/schema.ts        Convex database schema
 convex/captures.ts      Convex capture mutation/query code
 README.md               Setup and run notes
+BUILD_HISTORY.md        Complete build sequence, packet research, and metric formulas
+LICENSE                 MIT open-source license, copyright Alan Diaz
 netlify.toml            Netlify build and SPA routing config
 ```
 
@@ -68,9 +69,23 @@ npx netlify deploy --prod --dir=dist
 
 ## Current UX Direction
 
-The UI is intentionally simple.
+The public unauthenticated route is now a product landing page. It includes:
 
-The first thing a user should see is the Today Feed:
+- a direct-Bluetooth product explanation
+- an illustrative dashboard preview
+- direct, calculated, and estimated metric boundaries
+- a three-step Bluefy setup walkthrough
+- embedded create-account and sign-in controls
+
+The first-run flow is intentionally linear:
+
+1. Open the site inside Bluefy.
+2. Create an app account.
+3. Press one button to accept the capture disclosure and open the Bluetooth picker.
+4. Select WHOOP.
+5. Capture, decoding, local storage, and sync run automatically.
+
+After sign-in, a persistent connection strip stays above the metric tabs. The first metric screen is the Today Feed:
 
 - BPM
 - Sleep Score
@@ -89,7 +104,7 @@ Below that, the user can see:
 - local health report tools
 - advanced BLE explorer hidden behind disclosure
 
-The previous WHOOP-style circle dashboard was removed because it looked forced and confusing.
+The Today Feed also contains a **How every metric works** section that distinguishes direct BLE readings, local calculations, and estimates. The previous WHOOP-style circle dashboard was removed because it looked forced and confusing.
 
 ## Current Capture Flow
 
@@ -98,13 +113,13 @@ The intended sequence is:
 1. User wears WHOOP during the day and/or overnight.
 2. If sleeping, the WHOOP can stay disconnected from Bluefy overnight.
 3. In the morning, user opens the Netlify page in Bluefy.
-4. User signs in. The sign-in form includes a Keep me signed in checkbox.
-5. User accepts the cloud sync disclosure.
-6. User connects to WHOOP.
+4. User signs in or creates an app account.
+5. User presses **Enable & Connect WHOOP**. The first press records the disclosure acceptance and opens the Bluefy picker.
+6. User selects WHOOP.
 7. The page automatically subscribes to available notify/indicate characteristics.
 8. Incoming packets are stored locally.
-9. New packets are automatically batched and sent to Convex when the pipeline is configured, the auth token is present, and consent is accepted.
-10. The UI shows the live status so the user can see connect, capture, process, and send stages.
+9. New packets are automatically batched and sent to Convex when the authenticated pipeline is ready.
+10. Metrics update from the browser-captured data.
 
 ## Data We Can Decode Reliably
 
@@ -142,10 +157,10 @@ Current sleep-window logic:
 2. Look for a real overnight no-packet gap where the user disconnected from Bluefy.
 3. Require at least 2 trusted WHOOP backlog timestamp points inside that gap.
 4. Use the morning reconnect/gap end as the wake boundary.
-5. Infer sleep start from the trusted backlog points inside the gap.
+5. Use the first plausible trusted backlog interval inside the gap as sleep onset. Do not skip to the second hourly point, which can push onset about an hour late.
 6. Reject windows shorter than 3 hours or longer than 10 hours.
 
-This was retuned after the app incorrectly estimated an impossible `10:14 PM - 3:15 AM` window.
+This was retuned after the app incorrectly estimated an impossible `10:14 PM - 3:15 AM` window, then retuned again on June 6 after a second-interval onset estimate overshot reported sleep onset by about an hour.
 
 Validation against the saved morning capture:
 
@@ -169,7 +184,7 @@ The app currently produces local proxy scores:
 
 - Sleep Score: based on estimated duration, HR stability, HRV/RR proxy, continuity, and data confidence.
 - Recovery: based on local sleep score, RR/HRV proxy when available, HR profile, and confidence.
-- Strain: based on HR load from captured heart-rate readings.
+- Strain: based on sustained HR load above a resting-relative threshold. Passive sample volume increases confidence but does not add strain.
 - BPM: min/avg/max from valid heart-rate packets.
 - Battery: latest decoded battery packet.
 

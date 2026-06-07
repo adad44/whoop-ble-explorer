@@ -74,7 +74,7 @@ const WORKSPACE_PAGES: Array<{ id: WorkspacePage; label: string; detail: string;
   { id: 'sleep', label: 'Sleep', detail: 'score', icon: 'sleep' },
   { id: 'recovery', label: 'Recovery', detail: 'readiness', icon: 'recovery' },
   { id: 'strain', label: 'Strain', detail: 'load', icon: 'strain' },
-  { id: 'live', label: 'Live', detail: 'connect', icon: 'live' },
+  { id: 'live', label: 'Connect', detail: 'Bluefy', icon: 'live' },
 ];
 
 const WEEKDAY_OPTIONS: Array<{ value: WeekdayIndex; label: string; shortLabel: string }> = [
@@ -112,6 +112,94 @@ interface StoredBandAlarm {
   targetIso: string | null;
   days: WeekdayIndex[];
 }
+
+interface MetricMethod {
+  metric: string;
+  source: string;
+  method: string;
+  status: 'direct' | 'calculated' | 'estimated';
+}
+
+const METRIC_METHODS: MetricMethod[] = [
+  {
+    metric: 'BPM',
+    source: 'Standard BLE Heart Rate Measurement (0x2A37)',
+    method: 'Read directly from valid heart-rate packets exposed to Bluefy.',
+    status: 'direct',
+  },
+  {
+    metric: 'Battery',
+    source: 'Standard BLE Battery Level (0x2A19)',
+    method: 'Read directly from the percentage byte sent by the band.',
+    status: 'direct',
+  },
+  {
+    metric: 'RR / HRV',
+    source: 'RR intervals inside standard heart-rate packets',
+    method: 'HRV is an RMSSD calculation across consecutive RR intervals. At least three intervals are required.',
+    status: 'calculated',
+  },
+  {
+    metric: 'Sleep window and time asleep',
+    source: 'Trusted historical timestamps in WHOOP 61080004/61080007 backlog packets',
+    method: 'Find an overnight disconnect gap, use the first plausible trusted interval as sleep onset, and use morning reconnect as the wake boundary.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Sleep score',
+    source: 'Local sleep window, HR stability, HRV, continuity, and evidence confidence',
+    method: 'Weighted locally: duration 35%, resting-HR stability 25%, HRV 20%, continuity 10%, and data confidence 10%.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Recovery',
+    source: 'Local sleep score, RMSSD HRV, captured HR profile, and confidence',
+    method: 'Weighted locally: sleep 48%, HRV 24%, HR profile 20%, and data confidence 8%.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Strain',
+    source: 'Same-day captured heart-rate readings',
+    method: 'Group HR into 15-minute windows and score only sustained elevation above a resting-relative threshold. Sample volume increases confidence, not strain.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Resting HR',
+    source: 'Captured HR readings in the estimated sleep window',
+    method: 'Use the lowest valid sleep-window HR, falling back to the lowest locally captured HR.',
+    status: 'calculated',
+  },
+  {
+    metric: 'Sleep stages',
+    source: 'Sleep duration, HR stability, HRV, and confidence',
+    method: 'Split the estimated window heuristically into awake, light, deep, and REM. These are not decoded WHOOP stage labels.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Sleep efficiency and latency',
+    source: 'Estimated sleep duration plus local HR, HRV, and confidence',
+    method: 'Efficiency is time asleep divided by estimated time in bed. Latency is a bounded local estimate adjusted by HR, HRV, and evidence confidence.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Sleep need and debt',
+    source: 'Eight-hour baseline, recovery, strain, and current sleep duration',
+    method: 'Adjust the local daily target between 7.5 and 9 hours, then subtract captured time asleep.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Stress',
+    source: 'Sustained HR load and RMSSD HRV',
+    method: 'Increase the proxy with daily and peak HR load and reduce it when stronger HRV evidence is present.',
+    status: 'estimated',
+  },
+  {
+    metric: 'Data confidence',
+    source: 'Packet volume, valid HR/RR data, historical backlog, decoded frames, and sleep evidence',
+    method: 'Score how complete the browser capture is. It describes evidence quality, not health.',
+    status: 'calculated',
+  },
+];
 
 const viewerQuery = makeFunctionReference<'query', Record<string, never>, ViewerInfo | null>('captures:viewer');
 const currentUserConsentQuery = makeFunctionReference<'query', { version: string }, ConsentStatus>('captures:currentUserConsent');
@@ -318,6 +406,31 @@ function CaptureApp() {
     }
   }
 
+  async function enableAndConnectWhoop(): Promise<void> {
+    setError(null);
+    if (consentLoading || acceptingConsent) {
+      return;
+    }
+
+    if (!consentAccepted) {
+      setAcceptingConsent(true);
+      try {
+        await acceptDataConsent({ version: DATA_CONSENT_VERSION });
+        setStatus('Cloud sync enabled');
+        setAutoSyncMessage('Account ready. Choose your WHOOP in the Bluefy Bluetooth picker.');
+        await pickDevice(true);
+      } catch (consentError) {
+        setError(errorMessage(consentError));
+        setStatus('Setup failed');
+      } finally {
+        setAcceptingConsent(false);
+      }
+      return;
+    }
+
+    await pickDevice(true);
+  }
+
   async function startScan(): Promise<void> {
     setError(null);
     if (!consentAccepted) {
@@ -485,9 +598,9 @@ function CaptureApp() {
     setStatus(`Set WHOOP band alarm for ${new Date(alarmUnixSeconds * 1000).toLocaleTimeString()}`);
   }
 
-  async function pickDevice(): Promise<void> {
+  async function pickDevice(consentOverride = false): Promise<void> {
     setError(null);
-    if (!consentAccepted) {
+    if (!consentAccepted && !consentOverride) {
       setError('Accept the cloud sync disclosure before connecting a WHOOP on the public app.');
       return;
     }
@@ -509,15 +622,15 @@ function CaptureApp() {
         device,
       };
       upsertSeenDevice(seenDevice);
-      await connectToDevice(seenDevice);
+      await connectToDevice(seenDevice, consentOverride);
     } catch (pickError) {
       setError(errorMessage(pickError));
       setStatus('Ready');
     }
   }
 
-  async function connectToDevice(seenDevice: SeenDevice): Promise<void> {
-    if (!consentAccepted) {
+  async function connectToDevice(seenDevice: SeenDevice, consentOverride = false): Promise<void> {
+    if (!consentAccepted && !consentOverride) {
       setError('Accept the cloud sync disclosure before connecting a WHOOP on the public app.');
       return;
     }
@@ -1173,8 +1286,8 @@ function CaptureApp() {
     <main className="app-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Local BLE Health Lab</p>
-          <h1>WHOOP Health Capture</h1>
+          <p className="eyebrow">WHOOP Freedom</p>
+          <h1>Your band. Your data.</h1>
         </div>
         <div className="topbar-actions">
           <span className="signed-in-label">{signedInEmail}</span>
@@ -1182,6 +1295,27 @@ function CaptureApp() {
           <div className={`connection-pill ${connected ? 'is-connected' : ''}`}>{connected ? 'Connected' : 'Disconnected'}</div>
         </div>
       </header>
+
+      {supported === false && (
+        <section className="error-panel">
+          Web Bluetooth is unavailable here. Open this page in Bluefy on iPhone or another Web Bluetooth browser.
+        </section>
+      )}
+      {error && <section className="error-panel">{error}</section>}
+
+      <QuickConnectPanel
+        connected={connected}
+        deviceName={connectedDevice?.name}
+        consentAccepted={consentAccepted}
+        consentLoading={consentLoading}
+        connecting={autoSyncStage === 'connecting' || acceptingConsent}
+        supported={supported}
+        packetCount={packetCount}
+        liveLabel={liveLabel}
+        syncMessage={autoSyncMessage}
+        onConnect={enableAndConnectWhoop}
+        onOpenDetails={() => setActiveWorkspacePage('live')}
+      />
 
       <nav className="workspace-tabs" aria-label="WHOOP workspace sections">
         {WORKSPACE_PAGES.map((page) => (
@@ -1221,14 +1355,6 @@ function CaptureApp() {
         onAccept={acceptCloudSyncConsent}
       />
 
-      {supported === false && (
-        <section className="error-panel">
-          Web Bluetooth is unavailable here. Open this page in Bluefy on iPhone or a browser with Web Bluetooth support.
-        </section>
-      )}
-
-      {error && <section className="error-panel">{error}</section>}
-
       <section className="workflow-panel">
         <div className="workflow-copy">
           <p className="eyebrow">Live Sync</p>
@@ -1247,7 +1373,7 @@ function CaptureApp() {
         </div>
 
         <div className="workflow-actions">
-          <button className="primary-action" onClick={pickDevice} disabled={!supported || autoSyncStage === 'connecting' || !consentAccepted}>Connect WHOOP</button>
+          <button className="primary-action" onClick={() => void enableAndConnectWhoop()} disabled={!supported || autoSyncStage === 'connecting' || consentLoading || acceptingConsent}>Connect WHOOP</button>
         </div>
 
         <LiveSyncTimeline steps={liveSyncSteps} message={autoSyncMessage} />
@@ -1330,6 +1456,7 @@ function CaptureApp() {
         onAlarmDaysChange={updateAlarmDays}
         onToggleAlarm={toggleBandAlarm}
       />
+      <MetricMethodPanel />
       </div>
 
       <div className="workspace-page" hidden={activeWorkspacePage !== 'sleep'}>
@@ -1397,7 +1524,7 @@ function CaptureApp() {
             <div className="button-row">
               <button onClick={startScan} disabled={!supported || scanActive || !consentAccepted}>Scan</button>
               <button onClick={stopScan} disabled={!scanActive}>Stop</button>
-              <button onClick={pickDevice} disabled={!supported || !consentAccepted}>Pick Device</button>
+              <button onClick={() => void pickDevice()} disabled={!supported || !consentAccepted}>Pick Device</button>
             </div>
           </div>
 
@@ -1618,13 +1745,108 @@ function CaptureApp() {
   );
 }
 
+function QuickConnectPanel({
+  connected,
+  deviceName,
+  consentAccepted,
+  consentLoading,
+  connecting,
+  supported,
+  packetCount,
+  liveLabel,
+  syncMessage,
+  onConnect,
+  onOpenDetails,
+}: {
+  connected: boolean;
+  deviceName?: string;
+  consentAccepted: boolean;
+  consentLoading: boolean;
+  connecting: boolean;
+  supported: boolean | null;
+  packetCount: number;
+  liveLabel: string;
+  syncMessage: string;
+  onConnect: () => Promise<void>;
+  onOpenDetails: () => void;
+}) {
+  const readyToConnect = supported !== false && !consentLoading && !connecting;
+  const state = connected ? 'connected' : connecting ? 'working' : 'ready';
+  const title = connected
+    ? `${deviceName ?? 'WHOOP'} is connected`
+    : connecting
+      ? 'Opening Bluefy Bluetooth'
+      : 'Connect your WHOOP';
+  const detail = connected
+    ? `${packetCount} packets stored. Capture, decoding, and account sync run automatically while data arrives.`
+    : consentAccepted
+      ? 'Choose your band in the Bluefy picker. No WHOOP login is required.'
+      : 'One tap accepts the data disclosure and opens the Bluefy device picker.';
+
+  return (
+    <section className={`quick-connect ${state}`} aria-label="WHOOP connection">
+      <div className="quick-connect-status" aria-hidden="true">
+        <span />
+      </div>
+      <div className="quick-connect-copy">
+        <small>{liveLabel}</small>
+        <strong>{title}</strong>
+        <p>{detail}</p>
+        {connected && <em>{syncMessage}</em>}
+      </div>
+      <div className="quick-connect-actions">
+        {connected ? (
+          <button type="button" className="secondary-action" onClick={onOpenDetails}>Connection details</button>
+        ) : (
+          <button type="button" className="primary-action" onClick={() => void onConnect()} disabled={!readyToConnect}>
+            {connecting ? 'Connecting...' : consentAccepted ? 'Connect WHOOP' : 'Enable & Connect WHOOP'}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function MetricMethodPanel() {
+  return (
+    <details className="metric-method-panel">
+      <summary>
+        <span>
+          How every metric works
+          <small>Direct BLE readings, local calculations, and estimates</small>
+        </span>
+        <strong>No WHOOP API</strong>
+      </summary>
+      <div className="metric-method-intro">
+        Bluefy gives this page access to Bluetooth services exposed by the band. Raw packets are decoded in this browser, stored locally, and optionally synced to your account. Nothing is downloaded from a WHOOP account.
+      </div>
+      <div className="metric-method-list">
+        {METRIC_METHODS.map((item) => (
+          <article key={item.metric}>
+            <div>
+              <strong>{item.metric}</strong>
+              <span className={`method-status ${item.status}`}>{item.status}</span>
+            </div>
+            <p>{item.method}</p>
+            <small>Source: {item.source}</small>
+          </article>
+        ))}
+      </div>
+      <p className="metric-method-warning">
+        Direct readings reproduce standard Bluetooth values. Calculated and estimated values are independent project outputs, not official WHOOP scores or medical advice.
+      </p>
+    </details>
+  );
+}
+
 function SignInScreen() {
   const { signIn } = useAuthActions();
-  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
+  const [mode, setMode] = useState<'signIn' | 'signUp'>('signUp');
   const [rememberMe, setRememberMe] = useState(getRememberMePreference);
   const [submitting, setSubmitting] = useState(false);
   const [formStatus, setFormStatus] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const webBluetoothReady = typeof navigator !== 'undefined' && Boolean(navigator.bluetooth);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -1651,7 +1873,7 @@ function SignInScreen() {
         password,
       });
       if (result.signingIn) {
-        setFormStatus('Signed in. Loading your WHOOP workspace...');
+        setFormStatus(mode === 'signUp' ? 'Account created. Loading your connection screen...' : 'Signed in. Loading your connection screen...');
         window.setTimeout(() => {
           window.location.reload();
         }, 800);
@@ -1667,63 +1889,208 @@ function SignInScreen() {
   }
 
   return (
-    <main className="auth-shell">
-      <section className="auth-card">
-        <div className="auth-copy">
-          <p className="eyebrow">WHOOP BLE Health Capture</p>
-          <h1>Sign in to connect your WHOOP</h1>
-          <p>
-            After sign-in and consent, Bluefy can connect to your band, capture browser-exposed Bluetooth packets, and automatically send them to your private Convex pipeline.
+    <main className="landing-shell">
+      <nav className="landing-nav" aria-label="Landing page">
+        <a className="landing-brand" href="#top" aria-label="WHOOP Freedom home">
+          <span aria-hidden="true">WF</span>
+          <strong>WHOOP Freedom</strong>
+        </a>
+        <div className="landing-nav-links">
+          <a href="#how-it-works">How it works</a>
+          <a href="#data">Your data</a>
+          <a className="landing-nav-action" href="#account">{mode === 'signIn' ? 'Sign in' : 'Get started'}</a>
+        </div>
+      </nav>
+
+      <section className="landing-hero" id="top">
+        <div className="landing-hero-copy">
+          <p className="landing-kicker"><span /> Direct Bluetooth health data</p>
+          <h1>Your WHOOP data,<br /><em>direct from your band.</em></h1>
+          <p className="landing-lede">
+            Connect directly to your band in Bluefy. Capture heart rate, battery, sleep evidence, and independent health estimates from Bluetooth data you control.
           </p>
+          <div className="landing-hero-actions">
+            <a className="landing-primary-link" href="#account">Create free account</a>
+            {!webBluetoothReady && (
+              <a
+                className="landing-secondary-link"
+                href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Get Bluefy for iPhone
+              </a>
+            )}
+          </div>
+          <div className="landing-trust-row" aria-label="Product boundaries">
+            <span>No WHOOP credentials</span>
+            <span>No WHOOP API</span>
+            <span>Direct BLE capture</span>
+          </div>
         </div>
 
-        <aside className="bluefy-setup" aria-label="Bluefy setup requirement">
-          <div className="bluefy-setup-icon" aria-hidden="true">
-            <i />
+        <div className="landing-product-preview" aria-label="Example WHOOP Freedom dashboard">
+          <div className="preview-window-bar">
+            <span className="preview-brand-mark">WF</span>
+            <strong>Today</strong>
+            <small>Band connected</small>
           </div>
-          <div>
-            <strong>Using an iPhone? Install Bluefy first</strong>
-            <p>This website needs a Web Bluetooth browser to connect directly to your WHOOP. Download Bluefy, then open this website inside Bluefy to sign in or create your account.</p>
+          <div className="preview-connection">
+            <span />
+            <div>
+              <small>LIVE BLUETOOTH</small>
+              <strong>WHOOP is connected</strong>
+            </div>
+            <b>82%</b>
           </div>
-          <a
-            className="bluefy-download"
-            href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Download Bluefy
-          </a>
-        </aside>
-
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <label>
-            Email
-            <input name="email" type="email" autoComplete="email" required />
-          </label>
-          <label>
-            Password
-            <input name="password" type="password" autoComplete={mode === 'signIn' ? 'current-password' : 'new-password'} minLength={8} required />
-          </label>
-          <label className="toggle-line auth-remember">
-            <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
-            Keep me signed in
-          </label>
-          {formStatus && <p className="auth-status" aria-live="polite">{formStatus}</p>}
-          {formError && <p className="auth-error">{formError}</p>}
-          <button className="primary-action" type="submit" disabled={submitting}>
-            {submitting ? 'Working...' : mode === 'signIn' ? 'Sign in' : 'Create account'}
-          </button>
-          <button type="button" className="text-action" onClick={() => setMode(mode === 'signIn' ? 'signUp' : 'signIn')}>
-            {mode === 'signIn' ? 'Create an account' : 'Use existing account'}
-          </button>
-        </form>
-
-        <div className="auth-disclaimers">
-          <p>Not affiliated with WHOOP. No WHOOP API, cloud account, or credentials are used.</p>
-          <p>Bluetooth access depends on the browser and the services your device exposes.</p>
-          <p>Sleep, recovery, and strain values are local estimates, not official WHOOP scores or medical advice.</p>
+          <div className="preview-score-grid">
+            <article className="preview-score sleep">
+              <small>SLEEP</small>
+              <strong>78</strong>
+              <span>6h 48m captured</span>
+            </article>
+            <article className="preview-score recovery">
+              <small>RECOVERY</small>
+              <strong>71</strong>
+              <span>Local estimate</span>
+            </article>
+            <article className="preview-score strain">
+              <small>STRAIN</small>
+              <strong>9.4</strong>
+              <span>From captured HR</span>
+            </article>
+          </div>
+          <div className="preview-signal">
+            <div>
+              <small>HEART RATE</small>
+              <strong>68 <span>BPM</span></strong>
+            </div>
+            <div className="preview-wave" aria-hidden="true">
+              <i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i />
+            </div>
+          </div>
+          <p className="preview-disclaimer">Independent estimates are labeled. No official WHOOP scores are claimed.</p>
         </div>
       </section>
+
+      <section className="landing-proof" id="data">
+        <div>
+          <strong>Direct readings</strong>
+          <p>Heart rate, RR intervals, and battery are decoded from standard Bluetooth characteristics.</p>
+        </div>
+        <div>
+          <strong>Local analysis</strong>
+          <p>Sleep, recovery, and strain estimates are calculated from the evidence your browser captures.</p>
+        </div>
+        <div>
+          <strong>Clear boundaries</strong>
+          <p>Every metric explains its source and whether it is direct, calculated, or estimated.</p>
+        </div>
+      </section>
+
+      <section className="landing-setup" id="how-it-works">
+        <div className="landing-section-heading">
+          <p className="eyebrow">Simple setup</p>
+          <h2>From band to dashboard in three steps</h2>
+          <p>The connection stays inside the browser. You never enter a WHOOP account password.</p>
+        </div>
+        <div className="landing-step-grid">
+          <article>
+            <span>01</span>
+            <strong>Open in Bluefy</strong>
+            <p>Bluefy provides Web Bluetooth on iPhone so this page can communicate with the band.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <strong>Create an app account</strong>
+            <p>Your WHOOP Freedom account keeps signed-in captures separate. It is not a WHOOP account.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <strong>Choose your band</strong>
+            <p>Tap connect, select WHOOP in the device picker, and capture begins automatically.</p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-account-section" id="account">
+        <div className="landing-account-copy">
+          <p className="eyebrow">Start capturing</p>
+          <h2>Build your own health history from the band you already wear.</h2>
+          <p>
+            Raw packets stay available on your device. Signed-in capture bundles can sync to the app's private Convex pipeline so future sessions can build toward a longer-term view.
+          </p>
+          <ul>
+            <li>Direct BLE heart rate and battery readings</li>
+            <li>Automatic morning backlog capture</li>
+            <li>Independent sleep, recovery, and strain estimates</li>
+          </ul>
+        </div>
+
+        <section className="auth-card">
+          <div className="auth-copy">
+            <p className="eyebrow">{mode === 'signUp' ? 'New account' : 'Existing account'}</p>
+            <h2>{mode === 'signUp' ? 'Create your account' : 'Welcome back'}</h2>
+            <p>
+              {mode === 'signUp'
+                ? 'Use an email and password for WHOOP Freedom. No WHOOP credentials are requested.'
+                : 'Sign in to open your connection and health workspace.'}
+            </p>
+          </div>
+
+          <div className="auth-mode-switch" role="tablist" aria-label="Account mode">
+            <button type="button" className={mode === 'signUp' ? 'active' : ''} onClick={() => setMode('signUp')}>Create account</button>
+            <button type="button" className={mode === 'signIn' ? 'active' : ''} onClick={() => setMode('signIn')}>Sign in</button>
+          </div>
+
+          {!webBluetoothReady && (
+            <aside className="bluefy-setup" aria-label="Bluefy setup requirement">
+              <div className="bluefy-setup-icon" aria-hidden="true"><i /></div>
+              <div>
+                <strong>Open this site inside Bluefy</strong>
+                <p>Safari cannot connect to the band directly.</p>
+              </div>
+              <a
+                className="bluefy-download"
+                href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Get Bluefy
+              </a>
+            </aside>
+          )}
+
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <label>
+              Email
+              <input name="email" type="email" autoComplete="email" placeholder="you@example.com" required />
+            </label>
+            <label>
+              Password
+              <input name="password" type="password" autoComplete={mode === 'signIn' ? 'current-password' : 'new-password'} minLength={8} placeholder="8 characters minimum" required />
+            </label>
+            <label className="toggle-line auth-remember">
+              <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+              Keep me signed in
+            </label>
+            {formStatus && <p className="auth-status" aria-live="polite">{formStatus}</p>}
+            {formError && <p className="auth-error">{formError}</p>}
+            <button className="primary-action" type="submit" disabled={submitting}>
+              {submitting ? 'Working...' : mode === 'signIn' ? 'Sign in' : 'Create account and continue'}
+            </button>
+          </form>
+
+          <div className="auth-disclaimers">
+            <p>Not affiliated with WHOOP. Independent estimates are not medical advice or official WHOOP scores.</p>
+          </div>
+        </section>
+      </section>
+
+      <footer className="landing-footer">
+        <a className="landing-brand" href="#top"><span aria-hidden="true">WF</span><strong>WHOOP Freedom</strong></a>
+        <p>Open source by Alan Diaz</p>
+      </footer>
     </main>
   );
 }
@@ -3182,8 +3549,11 @@ interface StrainLoadModel {
 
 function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
   const width = 360;
-  const height = 150;
-  const chartPadding = 14;
+  const height = 170;
+  const chartLeft = 18;
+  const chartRight = 14;
+  const chartTop = 14;
+  const chartBottom = 34;
   const model = buildStrainLoadModel(readings);
 
   if (!model) {
@@ -3207,13 +3577,24 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
   const minScore = Math.max(0, Math.min(...strainPoints.map((point) => point.score)) - 0.4);
   const maxScore = Math.min(21, Math.max(...strainPoints.map((point) => point.score)) + 0.4);
   const scoreRange = Math.max(1, maxScore - minScore);
-  const plotWidth = width - chartPadding * 2;
-  const plotHeight = height - chartPadding * 2;
+  const plotWidth = width - chartLeft - chartRight;
+  const plotHeight = height - chartTop - chartBottom;
+  const plotBottom = height - chartBottom;
   const pointPositions = strainPoints.map((point) => ({
     ...point,
-    x: chartPadding + (((point.startMs + point.endMs) / 2 - firstTime) / timeRange) * plotWidth,
-    y: chartPadding + plotHeight - ((point.score - minScore) / scoreRange) * plotHeight,
+    x: chartLeft + (((point.startMs + point.endMs) / 2 - firstTime) / timeRange) * plotWidth,
+    y: chartTop + plotHeight - ((point.score - minScore) / scoreRange) * plotHeight,
   }));
+  const xAxisTicks = Array.from({ length: 4 }, (_, index) => {
+    const ratio = index / 3;
+    const time = firstTime + timeRange * ratio;
+    const anchor: 'start' | 'middle' | 'end' = index === 0 ? 'start' : index === 3 ? 'end' : 'middle';
+    return {
+      x: chartLeft + plotWidth * ratio,
+      label: formatGraphTime(new Date(time).toISOString()),
+      anchor,
+    };
+  });
   const peak = pointPositions.find((point) => point.startMs === model.peak.startMs) ?? pointPositions[0];
   const low = pointPositions.find((point) => point.startMs === model.low.startMs) ?? pointPositions[0];
   const polyline = pointPositions.map((point) => `${point.x},${point.y}`).join(' ');
@@ -3231,8 +3612,14 @@ function StrainTrendGraph({ readings }: { readings: HeartRateReading[] }) {
       </div>
       <div className="strain-graph-wrap">
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Estimated sustained strain peaks and lows from captured heart-rate windows">
-          <line x1={chartPadding} y1={height - chartPadding} x2={width - chartPadding} y2={height - chartPadding} />
-          <line x1={chartPadding} y1={chartPadding} x2={chartPadding} y2={height - chartPadding} />
+          <line x1={chartLeft} y1={plotBottom} x2={width - chartRight} y2={plotBottom} />
+          <line x1={chartLeft} y1={chartTop} x2={chartLeft} y2={plotBottom} />
+          {xAxisTicks.map((tick) => (
+            <g className="strain-axis-tick" key={`${tick.x}-${tick.label}`}>
+              <line x1={tick.x} y1={plotBottom} x2={tick.x} y2={plotBottom + 5} />
+              <text x={tick.x} y={height - 10} textAnchor={tick.anchor}>{tick.label}</text>
+            </g>
+          ))}
           {polyline && <polyline className="strain-line" points={polyline} />}
           <circle className="strain-marker low" cx={low.x} cy={low.y} r="5" />
           <circle className="strain-marker peak" cx={peak.x} cy={peak.y} r="5" />
@@ -3316,11 +3703,16 @@ function buildStrainLoadModel(readings: HeartRateReading[]): StrainLoadModel | u
 
   const sortedByScore = [...segments].sort((a, b) => b.score - a.score);
   const topSegments = sortedByScore.slice(0, Math.min(3, sortedByScore.length));
-  const activeMinutes = segments.filter((segment) => segment.score >= 4).length * 15;
+  const activeMinutes = segments.filter((segment) => segment.score >= 1.5).length * 15;
   const avgScore = meanNumber(segments.map((segment) => segment.score));
   const topScore = meanNumber(topSegments.map((segment) => segment.score));
-  const coverageBonus = Math.min(1.4, Math.sqrt(dayReadings.length) / 8);
-  const dailyScore = roundNumber(clampNumber(1 + avgScore * 0.45 + topScore * 0.72 + Math.min(3.5, activeMinutes / 45) + coverageBonus, 0, 21), 1);
+  const dailyScore = roundNumber(clampNumber(
+    avgScore * 0.25
+    + topScore * 0.55
+    + Math.min(3, activeMinutes / 75),
+    0,
+    21,
+  ), 1);
   const confidenceLabel = dayReadings.length < 12 || segments.length < 3
     ? `${segments.length} windows, limited capture`
     : `${segments.length} windows, ${dayReadings.length} HR samples`;
@@ -3340,10 +3732,11 @@ function buildStrainLoadModel(readings: HeartRateReading[]): StrainLoadModel | u
 }
 
 function calculateReadingStrainLoad(loadBpm: number, restingFloor: number, peakBpm = loadBpm): number {
-  const elevatedFromRestingFloor = Math.max(0, loadBpm - restingFloor);
-  const sustainedHighLoad = Math.max(0, loadBpm - 95);
-  const peakPressure = Math.max(0, peakBpm - 115) / 24;
-  const score = 1 + elevatedFromRestingFloor / 7.5 + sustainedHighLoad / 8 + peakPressure;
+  const loadThreshold = Math.max(88, restingFloor + 12);
+  const elevatedFromThreshold = Math.max(0, loadBpm - loadThreshold);
+  const sustainedHighLoad = Math.max(0, loadBpm - 105);
+  const peakPressure = Math.max(0, peakBpm - 135) / 28;
+  const score = elevatedFromThreshold / 8.5 + sustainedHighLoad / 11 + peakPressure;
   return Math.round(clampNumber(score, 0, 21) * 10) / 10;
 }
 
