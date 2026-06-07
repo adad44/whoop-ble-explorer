@@ -14,6 +14,9 @@ const MAX_SLEEP_WINDOW_MINUTES = 10 * 60;
 const MAX_SLEEP_TIMESTAMP_GAP_MINUTES = 130;
 const MIN_OVERNIGHT_DISCONNECT_GAP_MINUTES = 4 * 60;
 const MAX_OVERNIGHT_DISCONNECT_GAP_MINUTES = 13 * 60;
+const DEFAULT_SLEEP_ONSET_DELAY_MINUTES = 30;
+const MIN_SLEEP_ONSET_DELAY_MINUTES = 15;
+const MAX_SLEEP_ONSET_DELAY_MINUTES = 3 * 60;
 
 const STANDARD_SERVICES: Record<string, string> = {
   '00001800-0000-1000-8000-00805f9b34fb': 'Generic Access',
@@ -634,14 +637,17 @@ function inferSleepStartFromDisconnectGap(
 ): number {
   const sortedPoints = [...evidencePoints].sort((a, b) => a.time - b.time);
   const firstPoint = sortedPoints[0];
-  const secondPoint = sortedPoints[1];
-  const defaultStartTime = gapStartTime + 90 * 60000;
+  const defaultStartTime = gapStartTime + DEFAULT_SLEEP_ONSET_DELAY_MINUTES * 60000;
+  const firstPointDelayMinutes = firstPoint ? (firstPoint.time - gapStartTime) / 60000 : undefined;
 
-  if (secondPoint && secondPoint.time - gapStartTime <= 3 * 60 * 60000) {
-    return secondPoint.time;
-  }
-
-  if (firstPoint && firstPoint.time - gapStartTime >= 75 * 60000) {
+  // Backlog points are roughly hourly. Using the second point systematically
+  // pushes onset about one interval late, so prefer the first plausible point.
+  if (
+    firstPoint
+    && firstPointDelayMinutes !== undefined
+    && firstPointDelayMinutes >= MIN_SLEEP_ONSET_DELAY_MINUTES
+    && firstPointDelayMinutes <= MAX_SLEEP_ONSET_DELAY_MINUTES
+  ) {
     return firstPoint.time;
   }
 
@@ -659,7 +665,7 @@ function scoreDisconnectSleepWindow(
   const latencyMinutes = (sleepStartTime - gapStartTime) / 60000;
   const recencyMinutes = Math.abs(latestPacketTime - gapEndTime) / 60000;
   const durationScore = 120 - Math.min(90, Math.abs(durationMinutes - 390) / 2);
-  const latencyScore = latencyMinutes >= 35 && latencyMinutes <= 180 ? 40 : 10;
+  const latencyScore = latencyMinutes >= MIN_SLEEP_ONSET_DELAY_MINUTES && latencyMinutes <= 150 ? 40 : 10;
   const evidenceScore = Math.min(80, evidencePoints * 22);
   const recencyScore = Math.max(0, 35 - recencyMinutes / 10);
   return durationScore + latencyScore + evidenceScore + recencyScore;
